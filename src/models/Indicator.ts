@@ -11,7 +11,9 @@ export interface IEvidence {
   publicId: string;
   fileType: string;
   fileSize: number;
+  description?: string;
 }
+
 
 const evidenceSchema = new Schema<IEvidence>(
   {

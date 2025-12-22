@@ -1,22 +1,26 @@
 import multer, { FileFilterCallback } from "multer";
 import { Request } from "express";
 
-// In-memory storage for Multer (we will upload to Cloudinary directly)
+// In-memory storage for Multer (uploads to Cloudinary or similar)
 const storage = multer.memoryStorage();
 
-// File filter: only images / pdfs for example
-const fileFilter = (
-  req: Request,
-  file: Express.Multer.File,
-  cb: FileFilterCallback
-) => {
-  if (
-    file.mimetype.startsWith("image/") ||
-    file.mimetype === "application/pdf"
-  ) {
+// Allowed MIME types
+const allowedMimes = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/bmp",
+  "image/webp",
+  "application/pdf",
+];
+
+// File filter
+const fileFilter = (req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
+  if (allowedMimes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("Only images or PDFs are allowed"));
+    cb(new Error("Only image files (png, jpeg, jpg, gif, bmp, webp) or PDFs are allowed"));
   }
 };
 

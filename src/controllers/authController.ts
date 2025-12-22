@@ -1,41 +1,31 @@
 import { Request, Response } from "express";
+import jwt from "jsonwebtoken";
+import { User } from "../models/User";
 import { asyncHandler } from "../utils/asyncHandler";
-import { User, UserDocument } from "../models/User";
 import { sendToken } from "../utils/sendToken";
+import { env } from "../config/env";
 
 /* =========================
    AUTH CONTROLLER
 ========================= */
 export const authController = {
-  // --------------------------
-  // Login
-  // --------------------------
+  // LOGIN
   login: asyncHandler(async (req: Request, res: Response) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email and password are required" });
+      return res.status(400).json({ message: "Missing credentials" });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({
+      email: email.toLowerCase().trim(),
+    }).select("+password");
 
-    const user = (await User.findOne({ email: normalizedEmail }).select(
-      "+password"
-    )) as UserDocument | null;
-
-    if (!user) {
-      return res.status(401).json({ message: "Invalid email or password" });
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res.status(401).json({ message: "Invalid email or password" });
-    }
-
-    // ✅ Issue ACCESS TOKEN ONLY
-    await sendToken({
+    sendToken({
       user,
       statusCode: 200,
       message: "Logged in successfully",
@@ -43,37 +33,43 @@ export const authController = {
     });
   }),
 
-  // --------------------------
-  // Logout
-  // --------------------------
+  // LOGOUT
   logout: asyncHandler(async (_req: Request, res: Response) => {
-    // Stateless logout (JWT)
-    res.status(200).json({
-      success: true,
-      message: "Logged out successfully",
-    });
+    res
+      .clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: env.NODE_ENV === "production",
+        sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+        path: "/api/v1/auth/refresh",
+      })
+      .status(200)
+      .json({ success: true, message: "Logged out" });
   }),
 
-  // --------------------------
-  // Get current logged-in user
-  // --------------------------
-  getCurrentUser: asyncHandler(async (req: Request, res: Response) => {
-    const user = req.user;
-
-    if (!user) {
+  // REFRESH ACCESS TOKEN
+  refreshToken: asyncHandler(async (req: Request, res: Response) => {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
       return res.status(401).json({ message: "Not authenticated" });
     }
 
-    res.status(200).json({
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        pjNumber: user.pjNumber,
-        role: user.role,
-        accountVerified: user.accountVerified,
-        avatar: user.avatar,
-      },
+    let payload: any;
+    try {
+      payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET!);
+    } catch {
+      return res.status(401).json({ message: "Invalid refresh token" });
+    }
+
+    const user = await User.findById(payload.id);
+    if (!user) {
+      return res.status(401).json({ message: "User not found" });
+    }
+
+    sendToken({
+      user,
+      statusCode: 200,
+      message: "Token refreshed",
+      res,
     });
   }),
 };

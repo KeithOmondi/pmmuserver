@@ -3,9 +3,6 @@ import jwt from "jsonwebtoken";
 import { UserDocument } from "../models/User";
 import { env } from "../config/env";
 
-/* ----------------------------
-   Interface for options
----------------------------- */
 interface SendTokenOptions {
   user: UserDocument;
   statusCode: number;
@@ -13,44 +10,47 @@ interface SendTokenOptions {
   res: Response;
 }
 
-/* ----------------------------
-   sendToken: issues ACCESS token only
----------------------------- */
-export const sendToken = async ({
+export const sendToken = ({
   user,
   statusCode,
   message,
   res,
-}: SendTokenOptions): Promise<void> => {
-  // 1️⃣ Create access token (short-lived)
+}: SendTokenOptions): void => {
+  // Access token (SHORT LIVED)
   const accessToken = jwt.sign(
-    { id: user._id },
+    { id: user._id.toString() },
     env.JWT_SECRET!,
-    {
-      expiresIn: env.JWT_EXPIRE || "15m", // ✅ use normalized name
-    }
+    { expiresIn: "15m" }
   );
 
-  // 2️⃣ Sanitize user before sending
-  const sanitizedUser = {
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    pjNumber: user.pjNumber,
-    role: user.role,
-    accountVerified: user.accountVerified,
-    avatar: user.avatar,
-  };
+  // Refresh token (LONG LIVED)
+  const refreshToken = jwt.sign(
+    { id: user._id.toString() },
+    env.JWT_REFRESH_SECRET!,
+    { expiresIn: "7d" }
+  );
 
-  // 3️⃣ Send response
+  // Store refresh token in cookie
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/api/v1/auth/refresh",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
   res.status(statusCode).json({
     success: true,
     message,
     accessToken,
-    user: sanitizedUser,
+    user: {
+      _id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      pjNumber: user.pjNumber,
+      role: user.role,
+      accountVerified: user.accountVerified,
+      avatar: user.avatar,
+    },
   });
-
-  if (env.DEBUG_AUTH === "true") {
-    console.log(`🔐 Access token issued for ${user.email}`);
-  }
 };

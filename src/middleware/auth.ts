@@ -1,9 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import { User, UserDocument } from "../models/User";
-import { catchAsyncErrors } from "./catchAsyncErrors";
-import ErrorHandler from "./errorMiddlewares";
 import { env } from "../config/env";
+import ErrorHandler from "./errorMiddlewares";
+import { catchAsyncErrors } from "./catchAsyncErrors";
 
 /* =========================
    Extend Express Request
@@ -14,86 +14,52 @@ declare module "express-serve-static-core" {
   }
 }
 
-/* =========================
-   JWT Payload Interface
-========================= */
 interface AccessTokenPayload extends JwtPayload {
   id: string;
 }
 
-/* =========================
-   AUTHENTICATION MIDDLEWARE
-========================= */
 export const isAuthenticated = catchAsyncErrors(
   async (req: Request, _res: Response, next: NextFunction) => {
-    let token: string | undefined;
+    const authHeader = req.headers.authorization;
 
-    // ✅ Access token comes ONLY from Authorization header
-    if (req.headers.authorization?.startsWith("Bearer ")) {
-      token = req.headers.authorization.split(" ")[1];
-    }
+    const token =
+      authHeader && authHeader.startsWith("Bearer ")
+        ? authHeader.split(" ")[1]
+        : null;
 
     if (!token) {
-      return next(
-        new ErrorHandler(401, "No access token provided. Please log in.")
-      );
+      return next(new ErrorHandler(401, "Not authenticated"));
     }
 
+    let decoded: AccessTokenPayload;
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET!) as AccessTokenPayload;
-
-      if (!decoded?.id) {
-        return next(new ErrorHandler(401, "Invalid access token payload."));
-      }
-
-      // ⚠️ Do NOT use .lean() — we need a Mongoose document
-      const user = await User.findById(decoded.id).select("-password");
-
-      if (!user) {
-        return next(new ErrorHandler(401, "User no longer exists."));
-      }
-
-      req.user = user;
-
-      if (env.DEBUG_AUTH === "true") {
-        console.log("🔐 Authenticated:", {
-          id: user._id,
-          role: user.role,
-        });
-      }
-
-      next();
-    } catch (err: any) {
-      console.error("JWT verification error:", err.message);
-      return next(new ErrorHandler(401, "Invalid or expired access token."));
+      decoded = jwt.verify(token, env.JWT_SECRET!) as AccessTokenPayload;
+    } catch {
+      return next(new ErrorHandler(401, "Invalid or expired access token"));
     }
+
+    const user = await User.findById(decoded.id).select("-password");
+    if (!user) {
+      return next(new ErrorHandler(401, "User no longer exists"));
+    }
+
+    req.user = user;
+    next();
   }
 );
 
 /* =========================
-   AUTHORIZATION MIDDLEWARE
+   AUTHORIZATION
 ========================= */
 export const isAuthorized = (...roles: string[]) => {
-  const allowedRoles = roles.map((role) => role.toLowerCase());
+  const allowedRoles = roles.map((r) => r.toLowerCase());
 
   return (req: Request, _res: Response, next: NextFunction) => {
-    const userRole = req.user?.role?.toLowerCase();
+    const role = req.user?.role?.toLowerCase();
 
-    if (env.DEBUG_AUTH === "true") {
-      console.log("🔎 Role check:", {
-        userRole,
-        allowedRoles,
-      });
-    }
-
-    if (!userRole || !allowedRoles.includes(userRole)) {
+    if (!role || !allowedRoles.includes(role)) {
       return next(
-        new ErrorHandler(
-          403,
-          `Role '${
-            req.user?.role ?? "Unknown"
-          }' is not allowed to access this resource.`
-        )
+        new ErrorHandler(403, "You are not allowed to access this resource")
       );
     }
 

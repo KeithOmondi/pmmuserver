@@ -2,9 +2,12 @@ import { Request, Response, NextFunction } from "express";
 import Joi from "joi";
 import { Types } from "mongoose";
 import { Category, ICategory } from "../models/Category";
-import { Indicator, IIndicator } from "../models/Indicator";
+import { Indicator, IIndicator, IEvidence } from "../models/Indicator";
 import { catchAsyncErrors } from "../middleware/catchAsyncErrors";
 import ErrorHandler from "../middleware/errorMiddlewares";
+import { uploadToCloudinary } from "../utils/cloudinary";
+import { logActivity } from "../utils/activityLogger";
+import { notifyUser } from "../services/notification.service";
 
 /* ================================================
    STATUS CONSTANTS
@@ -123,23 +126,14 @@ export const createIndicator = catchAsyncErrors(
     await validateCategories(categoryId, level2CategoryId);
     const indicatorTitle = await resolveIndicatorTitle(indicatorId);
 
-    if (assignedToType === "individual" && !assignedTo)
-      return next(new ErrorHandler(400, "assignedTo is required"));
-
-    if (
-      assignedToType === "group" &&
-      (!assignedGroup || assignedGroup.length === 0)
-    )
-      return next(new ErrorHandler(400, "assignedGroup is required"));
-
     const indicator = await Indicator.create({
       category: categoryId,
       level2Category: level2CategoryId,
       indicatorTitle,
       unitOfMeasure,
       assignedToType,
-      assignedTo: assignedToType === "individual" ? assignedTo : undefined,
-      assignedGroup: assignedToType === "group" ? assignedGroup : [],
+      assignedTo,
+      assignedGroup: assignedGroup || [],
       startDate,
       dueDate,
       notes: notes || [],
@@ -147,6 +141,29 @@ export const createIndicator = catchAsyncErrors(
       createdBy: req.user._id,
       status: STATUS.PENDING,
       calendarEvent,
+    });
+
+    /** 🔔 NOTIFICATIONS: Assigned Users */
+    const assignedUsers =
+      assignedToType === "individual" ? [assignedTo] : assignedGroup || [];
+
+    for (const userId of assignedUsers) {
+      await notifyUser({
+        userId: new Types.ObjectId(userId),
+        title: "New Indicator Assigned",
+        message: `You have been assigned: ${indicatorTitle}`,
+        type: "assignment",
+        metadata: { indicatorId: indicator._id },
+      });
+    }
+
+    /** 📝 ACTIVITY LOG */
+    await logActivity({
+      user: req.user._id,
+      action: "CREATE_INDICATOR",
+      entity: "Indicator",
+      entityId: indicator._id,
+      meta: { assignedToType },
     });
 
     res.status(201).json({ success: true, indicator });
@@ -276,37 +293,105 @@ export const getAllIndicators = catchAsyncErrors(
 ================================================ */
 export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.user) {
+    if (!req.user)
       return res.status(401).json({ success: false, message: "Unauthorized" });
-    }
 
-    // Narrow req.user into a local constant
-    const user = req.user;
+    const userId = req.user._id; // ✅ safe because of the check above
 
     const indicator = await Indicator.findById(req.params.id);
-    if (!indicator) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Indicator not found" });
-    }
+    if (!indicator)
+      return res.status(404).json({ success: false, message: "Not found" });
 
+    // Check assignment
     const isAssigned =
-      (indicator.assignedToType === "individual" &&
-        indicator.assignedTo?.toString() === user._id.toString()) ||
-      (indicator.assignedToType === "group" &&
-        indicator.assignedGroup?.some(
-          (u) => u.toString() === user._id.toString()
-        ));
+      indicator.assignedTo?.toString() === userId.toString() ||
+      indicator.assignedGroup?.some((u) => u.toString() === userId.toString());
 
-    if (!isAssigned) {
-      return res
-        .status(403)
-        .json({ success: false, message: "Not assigned to you" });
+    if (!isAssigned)
+      return res.status(403).json({ success: false, message: "Forbidden" });
+
+    if (!req.files || !Array.isArray(req.files))
+      return res.status(400).json({ success: false, message: "No files" });
+
+    const descriptions: string[] = Array.isArray(req.body.descriptions)
+      ? req.body.descriptions
+      : [];
+
+    const uploadedFiles: IEvidence[] = [];
+
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i] as Express.Multer.File;
+      const upload = await uploadToCloudinary(
+        file.buffer,
+        "indicators",
+        file.originalname
+      );
+
+      uploadedFiles.push({
+        type: "file",
+        fileUrl: upload.secure_url,
+        publicId: upload.public_id,
+        fileName: file.originalname,
+        fileType: file.mimetype,
+        fileSize: file.size,
+        description: descriptions[i] || "",
+      });
     }
 
-    res
-      .status(200)
-      .json({ success: true, message: "Evidence submission endpoint" });
+    // Update indicator
+    indicator.evidence.push(...uploadedFiles);
+    indicator.progress = Math.min(100, indicator.evidence.length * 10);
+    await indicator.save();
+
+    /** 🔔 NOTIFICATIONS: Notify creator/admin and assigned users */
+    const notifyPromises: Promise<any>[] = [];
+
+    if (indicator.createdBy) {
+      notifyPromises.push(
+        notifyUser({
+          userId: indicator.createdBy,
+          title: "Indicator Evidence Submitted",
+          message: `${userId.toString()} submitted evidence for "${
+            indicator.indicatorTitle
+          }"`,
+          type: "assignment",
+          metadata: { indicatorId: indicator._id },
+        })
+      );
+    }
+
+    // Notify all assigned users except the submitter
+    const assignedUsers =
+      indicator.assignedToType === "individual"
+        ? [indicator.assignedTo]
+        : indicator.assignedGroup || [];
+
+    assignedUsers.forEach((assignedUserId) => {
+      if (assignedUserId && assignedUserId.toString() !== userId.toString()) {
+        notifyPromises.push(
+          notifyUser({
+            userId: new Types.ObjectId(assignedUserId),
+            title: "New Evidence Submitted",
+            message: `New evidence submitted for "${indicator.indicatorTitle}"`,
+            type: "assignment",
+            metadata: { indicatorId: indicator._id },
+          })
+        );
+      }
+    });
+
+    await Promise.all(notifyPromises);
+
+    /** 📝 ACTIVITY LOG */
+    await logActivity({
+      user: userId,
+      action: "SUBMIT_EVIDENCE",
+      entity: "Indicator",
+      entityId: indicator._id,
+      meta: { files: uploadedFiles.length },
+    });
+
+    res.status(200).json({ success: true, indicator });
   }
 );
 

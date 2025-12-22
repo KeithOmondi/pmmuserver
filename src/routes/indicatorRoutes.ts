@@ -1,4 +1,3 @@
-// routes/indicatorRoutes.ts
 import express from "express";
 import {
   createIndicator,
@@ -37,12 +36,12 @@ router.put(
 );
 
 /* ================================================
-   USER: SUBMIT EVIDENCE
+   USER: SUBMIT EVIDENCE (Multiple files)
 ================================================ */
 router.post(
   "/submit/:id",
   isAuthenticated,
-  upload.array("evidence"),
+  upload.array("evidence"), // matches front-end field name
   submitIndicatorEvidence
 );
 
@@ -56,20 +55,25 @@ router.get("/my", isAuthenticated, getUserIndicators);
 ================================================ */
 router.get("/get/:id", isAuthenticated, getIndicatorById);
 
-/*============================
-GET ALL INDICATORS
-===============================*/
-router.get("/all", isAuthenticated, isAuthorized("superAdmin", "Admin"), getAllIndicators);
+/* ================================================
+   GET ALL INDICATORS (ADMIN ONLY)
+================================================ */
+router.get(
+  "/all",
+  isAuthenticated,
+  isAuthorized("SuperAdmin", "Admin"),
+  getAllIndicators
+);
 
 /* ================================================
    DELETE INDICATOR
 ================================================ */
-router.delete("/delete/:id", isAuthenticated, isAuthorized("superAdmin", "Admin"), deleteIndicator);
-
-/* ================================================
-   GET ALL INDICATORS
-================================================ 
-router.get("/all", isAuthenticated, isAuthorized("SuperAdmin", "Admin"), getAllIndicatorsForAdmin);  */
+router.delete(
+  "/delete/:id",
+  isAuthenticated,
+  isAuthorized("SuperAdmin", "Admin"),
+  deleteIndicator
+);
 
 /* ================================================
    APPROVE / REJECT INDICATOR
@@ -77,13 +81,13 @@ router.get("/all", isAuthenticated, isAuthorized("SuperAdmin", "Admin"), getAllI
 router.put(
   "/approve/:id",
   isAuthenticated,
-  isAuthorized("superAdmin", "Admin"),
+  isAuthorized("SuperAdmin", "Admin"),
   approveIndicator
 );
 router.put(
   "/reject/:id",
   isAuthenticated,
-  isAuthorized("superAdmin", "Admin"),
+  isAuthorized("SuperAdmin", "Admin"),
   rejectIndicator
 );
 
