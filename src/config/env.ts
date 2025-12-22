@@ -1,12 +1,12 @@
 import { config } from "dotenv";
 import { z } from "zod";
 
+// Load .env file
 config();
 
 /* =========================
    ENV SCHEMA
 ========================= */
-
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.string().default("5000"),
@@ -39,9 +39,9 @@ const envSchema = z.object({
   FRONTEND_URL: z.string().url("FRONTEND_URL must be a valid URL"),
 
   /* =========================
-     COOKIES
+     COOKIES / DEBUG
   ========================= */
-  COOKIE_EXPIRE: z.string().default("7"), // days (legacy / fallback)
+  COOKIE_EXPIRE: z.string().default("7"), // days
   DEBUG_AUTH: z.enum(["true", "false"]).default("false"),
 
   /* =========================
@@ -55,7 +55,6 @@ const envSchema = z.object({
 /* =========================
    VALIDATION
 ========================= */
-
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
@@ -67,10 +66,28 @@ if (!parsed.success) {
 }
 
 /* =========================
-   EXPORT
+   EXPORT (NORMALIZED)
 ========================= */
-
 export const env = {
-  ...parsed.data,
+  NODE_ENV: parsed.data.NODE_ENV,
   PORT: Number(parsed.data.PORT),
+
+  MONGO_URI: parsed.data.MONGO_URI,
+  DATABASE_NAME: parsed.data.DATABASE_NAME,
+
+  JWT_SECRET: parsed.data.JWT_SECRET,
+  JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET,
+
+  // ✅ normalized for sendToken.ts
+  JWT_EXPIRE: parsed.data.JWT_EXPIRES_IN,
+  JWT_REFRESH_EXPIRE: parsed.data.JWT_REFRESH_EXPIRES_IN,
+
+  FRONTEND_URL: parsed.data.FRONTEND_URL,
+
+  COOKIE_EXPIRE: parsed.data.COOKIE_EXPIRE,
+  DEBUG_AUTH: parsed.data.DEBUG_AUTH,
+
+  CLOUDINARY_CLOUD_NAME: parsed.data.CLOUDINARY_CLOUD_NAME,
+  CLOUDINARY_API_KEY: parsed.data.CLOUDINARY_API_KEY,
+  CLOUDINARY_API_SECRET: parsed.data.CLOUDINARY_API_SECRET,
 };

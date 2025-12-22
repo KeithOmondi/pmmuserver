@@ -27,7 +27,7 @@ export const sendToken = async ({
     { id: user._id },
     env.JWT_SECRET!,
     {
-      expiresIn: env.JWT_EXPIRE || "15m",
+      expiresIn: env.JWT_EXPIRE || "15m", // ✅ use normalized name
     }
   );
 
