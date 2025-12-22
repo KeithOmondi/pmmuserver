@@ -1,11 +1,11 @@
 import express from "express";
 import cors from "cors";
-import { errorHandler } from "./middleware/errorHandler";
 import authRoutes from "./routes/authRoutes";
 import categoryRoutes from "./routes/categoryRoutes";
 import indicatorRoutes from "./routes/indicatorRoutes";
 import userRoutes from "./routes/userRoutes";
 import { env } from "./config/env";
+import { errorHandler } from "./middleware/errorHandler";
 
 const app = express();
 

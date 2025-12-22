@@ -1,5 +1,4 @@
 import { Request, Response, NextFunction } from "express";
-import { Error as MongooseError } from "mongoose";
 
 // ============================
 // ErrorHandler Class

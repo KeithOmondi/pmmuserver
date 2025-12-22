@@ -1,6 +1,5 @@
 import {
   v2 as cloudinary,
-  UploadApiOptions,
   UploadApiResponse,
 } from "cloudinary";
 
