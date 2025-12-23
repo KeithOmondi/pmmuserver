@@ -1,23 +1,79 @@
-// controllers/reportsController.ts
 import { Request, Response } from "express";
 import { Indicator } from "../models/Indicator";
 import puppeteer from "puppeteer";
 
-// --- Helper to format indicators as HTML ---
-const formatIndicatorsForHtml = (indicators: any[], reportType: string) => {
+/**
+ * Builds the query with strict Role-Based Access Control (RBAC).
+ * Ensures standard users can NEVER access the full registry.
+ */
+const buildIndicatorQuery = (req: Request) => {
+  const { type, id, group } = req.query;
+  const user = req.user;
+  const query: any = {};
+
+  const isAdmin = user?.role === "Admin" || user?.role === "SuperAdmin";
+
+  // 1. DATA ACCESS CONTROL
+  if (!isAdmin) {
+    // Standard Users: Always hard-limit to their assigned records
+    // regardless of the "type" they sent in the request.
+    query.$or = [{ assignedTo: user?._id }, { assignedGroup: user?._id }];
+  } else {
+    // Admins/SuperAdmins: Can filter by specific ID or Group
+    if (type === "single" && id) {
+      query._id = id;
+    } else if (type === "group" && group) {
+      query.assignedGroup = group;
+    }
+    // Note: If type is 'general', query remains {} (fetches all)
+  }
+
+  // 2. TIME FILTERS (Applies to both roles, within their allowed scope)
+  if (type === "weekly") {
+    const start = new Date();
+    start.setDate(start.getDate() - 7);
+    query.createdAt = { $gte: start };
+  } else if (type === "quarterly") {
+    const now = new Date();
+    const startMonth = Math.floor(now.getMonth() / 3) * 3;
+    const startOfQuarter = new Date(now.getFullYear(), startMonth, 1);
+    query.createdAt = { $gte: startOfQuarter };
+  }
+
+  return query;
+};
+
+const formatIndicatorsForHtml = (
+  indicators: any[],
+  reportType: string,
+  role: string
+) => {
   const now = new Date().toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "long",
     year: "numeric",
   });
 
-  const total = indicators.length;
-  const completed = indicators.filter((i) => i.progress === 100).length;
-  const pending = indicators.filter((i) => i.status === "pending").length;
+  // Access Scope Label for the PDF header
+  const accessLabel =
+    role === "Admin" || role === "SuperAdmin"
+      ? "GLOBAL REGISTRY VIEW"
+      : "PERSONAL ASSIGNMENT VIEW";
 
   const rows = indicators
-    .map(
-      (i) => `
+    .map((i) => {
+      let responsibleParty = "Unassigned";
+
+      if (i.assignedToType === "individual" && i.assignedTo) {
+        responsibleParty =
+          i.assignedTo.username || i.assignedTo.name || "Unknown User";
+      } else if (i.assignedToType === "group" && i.assignedGroup?.length > 0) {
+        responsibleParty = i.assignedGroup
+          .map((u: any) => u.username || u.name || "Unknown")
+          .join(", ");
+      }
+
+      return `
     <tr>
       <td>
         <div class="indicator-title">${i.indicatorTitle}</div>
@@ -25,78 +81,59 @@ const formatIndicatorsForHtml = (indicators: any[], reportType: string) => {
           i.level2Category?.title || "Standard Registry"
         }</div>
       </td>
-      <td>${i.category?.title || "-"}</td>
-      <td>
-        <span class="badge ${i.assignedToType}">
-          ${
-            i.assignedToType === "individual"
-              ? i.assignedTo || "Unassigned"
-              : "Group Body"
-          }
-        </span>
-      </td>
-      <td><span class="status-${i.status}">${i.status.toUpperCase()}</span></td>
+      <td>${i.category?.title || "N/A"}</td>
+      <td><span class="badge ${
+        i.assignedToType
+      }">${responsibleParty}</span></td>
+      <td><span class="status-${i.status?.toLowerCase()}">${(
+        i.status || "pending"
+      ).toUpperCase()}</span></td>
       <td class="progress-cell">
-        <div class="progress-text">${i.progress}%</div>
+        <div class="progress-text">${i.progress || 0}%</div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" style="width: ${
-          i.progress
+          i.progress || 0
         }%"></div></div>
       </td>
-      <td class="date-text">${new Date(i.dueDate).toLocaleDateString()}</td>
-    </tr>
-  `
-    )
-    .join("\n");
+      <td class="date-text">${
+        i.dueDate ? new Date(i.dueDate).toLocaleDateString() : "-"
+      }</td>
+    </tr>`;
+    })
+    .join("");
 
   return `
   <!DOCTYPE html>
   <html>
     <head>
-      <title>Judiciary Strategic Report</title>
       <style>
         @page { size: A4 landscape; margin: 1cm; }
-        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 0; padding: 0; line-height: 1.4; }
-        .header-container { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #1a3a32; padding-bottom: 20px; margin-bottom: 30px; }
-        .logo-box img { height: 80px; width: auto; }
-        .report-meta { text-align: right; }
-        .report-meta h1 { margin: 0; color: #1a3a32; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; }
-        .report-meta p { margin: 5px 0 0; color: #c2a336; font-weight: bold; font-size: 12px; }
-        .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
-        .stat-card { border: 1px solid #e0e0e0; padding: 15px; border-radius: 8px; text-align: center; }
-        .stat-card .label { font-size: 10px; font-weight: 800; color: #8c94a4; text-transform: uppercase; margin-bottom: 5px; }
-        .stat-card .value { font-size: 20px; font-weight: 800; color: #1a3a32; }
-        table { border-collapse: collapse; width: 100%; }
-        th { background-color: #1a3a32; color: #ffffff; text-transform: uppercase; font-size: 10px; letter-spacing: 1px; padding: 12px 8px; text-align: left; }
-        td { border-bottom: 1px solid #eee; padding: 12px 8px; font-size: 11px; vertical-align: middle; }
-        .indicator-title { font-weight: bold; color: #1a3a32; font-size: 12px; }
-        .subcategory { color: #8c94a4; font-size: 10px; margin-top: 2px; }
-        .date-text { color: #444; font-family: monospace; }
-        .status-approved { color: #2e7d32; font-weight: 800; }
-        .status-pending { color: #ed6c02; font-weight: 800; }
-        .status-rejected { color: #d32f2f; font-weight: 800; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; }
-        .individual { background: #f4f0e6; color: #c2a336; }
-        .group { background: #e3f2fd; color: #1976d2; }
-        .progress-cell { width: 100px; }
-        .progress-text { font-weight: bold; margin-bottom: 3px; }
-        .progress-bar-bg { background: #eee; height: 6px; border-radius: 3px; width: 80px; }
-        .progress-bar-fill { background: #1a3a32; height: 100%; border-radius: 3px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1a1a1a; margin: 0; padding: 0; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #1a3a32; padding-bottom: 15px; margin-bottom: 25px; }
+        .logo { height: 70px; }
+        .report-info { text-align: right; }
+        .report-info h1 { margin: 0; color: #1a3a32; font-size: 20px; text-transform: uppercase; }
+        .report-info p { margin: 5px 0 0; color: #c2a336; font-weight: bold; font-size: 11px; }
+        .access-tag { font-size: 9px; color: #888; letter-spacing: 1px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { background-color: #1a3a32; color: #ffffff; text-transform: uppercase; font-size: 10px; padding: 12px; text-align: left; }
+        td { padding: 12px; border-bottom: 1px solid #eee; font-size: 10px; vertical-align: middle; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 9px; }
+        .individual { background: #fef3c7; color: #92400e; }
+        .group { background: #dbeafe; color: #1e40af; }
+        .status-approved { color: #059669; font-weight: 800; }
+        .status-pending { color: #d97706; font-weight: 800; }
+        .progress-bar-bg { background: #e5e7eb; height: 8px; border-radius: 4px; width: 80px; }
+        .progress-bar-fill { background: #1a3a32; height: 100%; border-radius: 4px; }
       </style>
     </head>
     <body>
-      <div class="header-container">
-        <div class="logo-box">
-           <img src="https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png" alt="Judiciary Logo">
+      <div class="header">
+        <img src="https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png" class="logo">
+        <div class="report-info">
+          <h1>ORHC Performance Report</h1>
+          <p>${reportType.toUpperCase()} REPORT | ${now}</p>
+          <div class="access-tag">${accessLabel}</div>
         </div>
-        <div class="report-meta">
-          <h1>Strategic Performance Dossier</h1>
-          <p>Report Type: ${reportType.toUpperCase()} | Generated: ${now}</p>
-        </div>
-      </div>
-      <div class="summary-grid">
-        <div class="stat-card"><div class="label">Total Indicators</div><div class="value">${total}</div></div>
-        <div class="stat-card"><div class="label">Total Compliant</div><div class="value">${completed}</div></div>
-        <div class="stat-card"><div class="label">Awaiting Review</div><div class="value">${pending}</div></div>
       </div>
       <table>
         <thead>
@@ -109,120 +146,62 @@ const formatIndicatorsForHtml = (indicators: any[], reportType: string) => {
             <th>Deadline</th>
           </tr>
         </thead>
-        <tbody>
-          ${rows}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>
     </body>
-  </html>
-  `;
+  </html>`;
 };
 
-// --- GET /reports/pdf?type=weekly|monthly|single&id=xyz&group=abc ---
 export const getReportPdf = async (req: Request, res: Response) => {
   try {
-    const { type, id, group } = req.query;
-    let indicators: any[] = [];
-
-    if (type === "single" && id) {
-      indicators = await Indicator.find({ _id: id }).populate(
-        "category level2Category"
-      );
-    } else if (type === "group" && group) {
-      indicators = await Indicator.find({ assignedGroup: group }).populate(
-        "category level2Category"
-      );
-    } else if (type === "weekly") {
-      const now = new Date();
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay());
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 6);
-
-      indicators = await Indicator.find({
-        createdAt: { $gte: startOfWeek, $lte: endOfWeek },
-      }).populate("category level2Category");
-    } else if (type === "quarterly") {
-      const now = new Date();
-      const startMonth = Math.floor(now.getMonth() / 3) * 3;
-      const startOfQuarter = new Date(now.getFullYear(), startMonth, 1);
-      const endOfQuarter = new Date(now.getFullYear(), startMonth + 3, 0);
-
-      indicators = await Indicator.find({
-        createdAt: { $gte: startOfQuarter, $lte: endOfQuarter },
-      }).populate("category level2Category");
-    } else {
-      indicators = await Indicator.find({}).populate("category level2Category");
-    }
+    const query = buildIndicatorQuery(req);
+    const indicators = await Indicator.find(query)
+      .populate("category level2Category")
+      .populate("assignedTo", "username name")
+      .populate("assignedGroup", "username name")
+      .lean();
 
     const html = formatIndicatorsForHtml(
       indicators,
-      (type as string) || "general"
+      (req.query.type as string) || "General",
+      req.user?.role || "User"
     );
 
-    // Launch Puppeteer to generate PDF
-    const browser = await puppeteer.launch();
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox"],
+    });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdfBuffer = await page.pdf({ format: "A4", landscape: true, printBackground: true });
+    const pdf = await page.pdf({
+      format: "A4",
+      landscape: true,
+      printBackground: true,
+    });
     await browser.close();
 
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename=Strategic_Report_${type || "general"}.pdf`,
-      "Content-Length": pdfBuffer.length,
-    });
-    res.send(pdfBuffer);
+    res.contentType("application/pdf").send(pdf);
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Failed to generate PDF report");
+    res.status(500).json({ message: "PDF generation failed" });
   }
 };
 
-
-// --- Exported function to render HTML ---
 export const getReportHtml = async (req: Request, res: Response) => {
   try {
-    const { type, id, group } = req.query;
-    let indicators: any[] = [];
+    const query = buildIndicatorQuery(req);
+    const indicators = await Indicator.find(query)
+      .populate("category level2Category")
+      .populate("assignedTo", "username name")
+      .populate("assignedGroup", "username name")
+      .lean();
 
-    if (type === "single" && id) {
-      indicators = await Indicator.find({ _id: id }).populate(
-        "category level2Category"
-      );
-    } else if (type === "group" && group) {
-      indicators = await Indicator.find({ assignedGroup: group }).populate(
-        "category level2Category"
-      );
-    } else if (type === "weekly") {
-      const now = new Date();
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay());
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 6);
-
-      indicators = await Indicator.find({
-        createdAt: { $gte: startOfWeek, $lte: endOfWeek },
-      }).populate("category level2Category");
-    } else if (type === "quarterly") {
-      const now = new Date();
-      const startMonth = Math.floor(now.getMonth() / 3) * 3;
-      const startOfQuarter = new Date(now.getFullYear(), startMonth, 1);
-      const endOfQuarter = new Date(now.getFullYear(), startMonth + 3, 0);
-
-      indicators = await Indicator.find({
-        createdAt: { $gte: startOfQuarter, $lte: endOfQuarter },
-      }).populate("category level2Category");
-    } else {
-      indicators = await Indicator.find({}).populate("category level2Category");
-    }
-
-    const html = formatIndicatorsForHtml(indicators, (type as string) || "general");
-
-    res.header("Content-Type", "text/html");
+    const html = formatIndicatorsForHtml(
+      indicators,
+      (req.query.type as string) || "General",
+      req.user?.role || "User"
+    );
     res.send(html);
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Failed to generate report");
+    res.status(500).json({ message: "HTML preview failed" });
   }
 };
