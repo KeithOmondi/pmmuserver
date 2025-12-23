@@ -8,6 +8,7 @@ import categoryRoutes from "./routes/categoryRoutes";
 import indicatorRoutes from "./routes/indicatorRoutes";
 import userRoutes from "./routes/userRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
+import reportsRoutes from "./routes/reportsRoutes"
 import { errorHandler } from "./middleware/errorHandler";
 
 const app = express();
@@ -27,6 +28,7 @@ app.use("/api/v1/category", categoryRoutes);
 app.use("/api/v1/indicators", indicatorRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
+app.use("/api/v1/reports", reportsRoutes);
 
 app.use(errorHandler);
 
