@@ -9,7 +9,9 @@ import indicatorRoutes from "./routes/indicatorRoutes";
 import userRoutes from "./routes/userRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
 import reportsRoutes from "./routes/reportsRoutes"
+import adminRoutes from "./routes/adminRoutes"
 import { errorHandler } from "./middleware/errorHandler";
+import { auditMiddleware } from "./middleware/auditMiddleware";
 
 const app = express();
 
@@ -22,6 +24,7 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
+app.use(auditMiddleware);
 
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/category", categoryRoutes);
@@ -29,6 +32,7 @@ app.use("/api/v1/indicators", indicatorRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
 app.use("/api/v1/reports", reportsRoutes);
+app.use("/api/v1/admin", adminRoutes);
 
 app.use(errorHandler);
 

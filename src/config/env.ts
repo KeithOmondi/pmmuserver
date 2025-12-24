@@ -50,6 +50,7 @@ const envSchema = z.object({
   CLOUDINARY_CLOUD_NAME: z.string().nonempty(),
   CLOUDINARY_API_KEY: z.string().nonempty(),
   CLOUDINARY_API_SECRET: z.string().nonempty(),
+  REDIS_URL: z.string().nonempty(),
 });
 
 /* =========================
@@ -90,4 +91,6 @@ export const env = {
   CLOUDINARY_CLOUD_NAME: parsed.data.CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_API_KEY: parsed.data.CLOUDINARY_API_KEY,
   CLOUDINARY_API_SECRET: parsed.data.CLOUDINARY_API_SECRET,
+
+  REDIS_URL: parsed.data.REDIS_URL
 };

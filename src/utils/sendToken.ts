@@ -39,6 +39,8 @@ export const sendToken = ({
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
+  // src/utils/sendToken.ts
+
   res.status(statusCode).json({
     success: true,
     message,
@@ -50,7 +52,8 @@ export const sendToken = ({
       pjNumber: user.pjNumber,
       role: user.role,
       accountVerified: user.accountVerified,
-      avatar: user.avatar,
+      // FIX: Return only the URL string to match the updateProfile response
+      avatar: user.avatar?.url || "", 
     },
   });
 };
