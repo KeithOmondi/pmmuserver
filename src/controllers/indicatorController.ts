@@ -1,8 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import Joi from "joi";
-import { Types, HydratedDocument } from "mongoose";
+import { Types } from "mongoose";
 import { Category, ICategory } from "../models/Category";
-import { Indicator, IIndicator, IEvidence } from "../models/Indicator";
+import { Indicator, IEvidence } from "../models/Indicator";
 import { catchAsyncErrors } from "../middleware/catchAsyncErrors";
 import ErrorHandler from "../middleware/errorMiddlewares";
 import { uploadToCloudinary, cloudinary } from "../utils/cloudinary";
@@ -86,19 +86,14 @@ const resolveIndicatorTitle = async (indicatorId: string) => {
 /* =====================================
    CREATE INDICATOR
 ===================================== */
-/* =====================================
-   CREATE INDICATOR
-===================================== */
 export const createIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    // 1️⃣ Ensure user is authenticated and has role
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
     if (!hasRole(req.user.role, ["superadmin"]))
       return next(new ErrorHandler(403, "Forbidden"));
 
-    // 2️⃣ Validate client payload, strip unknown keys
     const { error, value } = createIndicatorSchema.validate(req.body, {
-      stripUnknown: true, // removes any extra keys like indicatorTitle
+      stripUnknown: true,
     });
     if (error) return next(new ErrorHandler(400, error.message));
 
@@ -115,17 +110,13 @@ export const createIndicator = catchAsyncErrors(
       calendarEvent,
     } = value;
 
-    // 3️⃣ Validate category hierarchy
     await validateCategories(categoryId, level2CategoryId);
-
-    // 4️⃣ Compute indicatorTitle server-side
     const indicatorTitle = await resolveIndicatorTitle(indicatorId);
 
-    // 5️⃣ Create indicator
     const indicator = await Indicator.create({
       category: categoryId,
       level2Category: level2CategoryId,
-      indicatorTitle, // server-computed
+      indicatorTitle,
       unitOfMeasure,
       assignedToType,
       assignedTo,
@@ -137,11 +128,33 @@ export const createIndicator = catchAsyncErrors(
       calendarEvent: calendarEvent || null,
     });
 
-    // 6️⃣ Respond
+    // --- ACTIVITY LOG ---
+    await logActivity({
+      user: req.user._id,
+      action: "CREATE_INDICATOR",
+      entity: indicatorTitle,
+      entityId: indicator._id,
+      level: "success",
+    });
+
+    // --- NOTIFICATION ---
+    const targetUsers = assignedTo ? [assignedTo] : assignedGroup || [];
+    for (const targetId of targetUsers) {
+      await notifyUser({
+        userId: new Types.ObjectId(targetId),
+        submittedBy: req.user._id,
+        title: "New Performance Indicator Assigned",
+        message: `You have been assigned: ${indicatorTitle}. Due date: ${new Date(
+          dueDate
+        ).toLocaleDateString()}`,
+        type: "assignment",
+        metadata: { indicatorId: indicator._id },
+      });
+    }
+
     res.status(201).json({ success: true, indicator });
   }
 );
-
 
 /* =====================================
    UPDATE INDICATOR
@@ -157,6 +170,15 @@ export const updateIndicator = catchAsyncErrors(
 
     Object.assign(indicator, req.body);
     await indicator.save();
+
+    // --- ACTIVITY LOG ---
+    await logActivity({
+      user: req.user._id,
+      action: "UPDATE_INDICATOR",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "info",
+    });
 
     res.status(200).json({ success: true, indicator });
   }
@@ -174,7 +196,17 @@ export const deleteIndicator = catchAsyncErrors(
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Not found"));
 
+    const title = indicator.indicatorTitle;
     await indicator.deleteOne();
+
+    // --- ACTIVITY LOG ---
+    await logActivity({
+      user: req.user._id,
+      action: "DELETE_INDICATOR",
+      entity: title,
+      level: "warn",
+    });
+
     res.status(200).json({ success: true });
   }
 );
@@ -280,15 +312,13 @@ export const downloadEvidence = catchAsyncErrors(
     const evidence = indicator.evidence.find((e) => e.publicId === publicId);
     if (!evidence) return next(new ErrorHandler(404, "Evidence not found"));
 
-    // 🔐 Authenticated Cloudinary URL (SIGNED)
     const signedUrl = cloudinary.url(publicId, {
       resource_type: "raw",
       secure: true,
       sign_url: true,
-      expires_at: Math.floor(Date.now() / 1000) + 60, // 1 minute
+      expires_at: Math.floor(Date.now() / 1000) + 60,
     });
 
-    // ⬇️ Stream file through backend
     const response = await axios.get(signedUrl, {
       responseType: "stream",
     });
@@ -313,7 +343,8 @@ export const submitIndicatorEvidence = catchAsyncErrors(
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    const files = (req.files as { [key: string]: Express.Multer.File[] })?.files;
+    const files = (req.files as { [key: string]: Express.Multer.File[] })
+      ?.files;
 
     if (!files || !files.length) {
       return next(new ErrorHandler(400, "No files uploaded"));
@@ -344,11 +375,29 @@ export const submitIndicatorEvidence = catchAsyncErrors(
 
     await indicator.save();
 
+    // --- ACTIVITY LOG ---
+    await logActivity({
+      user: req.user._id,
+      action: "SUBMIT_EVIDENCE",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "info",
+    });
+
+    // --- NOTIFICATION ---
+    // Notify the admin who created the indicator that work has been submitted
+    await notifyUser({
+      userId: indicator.createdBy,
+      submittedBy: req.user._id,
+      title: "Evidence Submitted for Review",
+      message: `A user has submitted evidence for: ${indicator.indicatorTitle}.`,
+      type: "system",
+      metadata: { indicatorId: indicator._id },
+    });
+
     res.status(200).json({ success: true, indicator });
   }
 );
-
-
 
 /* =====================================
    REVIEW (APPROVE / REJECT)
@@ -370,6 +419,38 @@ const reviewIndicator = async (
   indicator.reviewedBy = req.user._id;
   indicator.reviewedAt = new Date();
   await indicator.save();
+
+  // --- ACTIVITY LOG ---
+  await logActivity({
+    user: req.user._id,
+    action:
+      status === STATUS.APPROVED ? "APPROVE_INDICATOR" : "REJECT_INDICATOR",
+    entity: indicator.indicatorTitle,
+    entityId: indicator._id,
+    level: status === STATUS.APPROVED ? "success" : "error",
+  });
+
+  // --- NOTIFICATION ---
+  // Notify the assigned users about the review outcome
+  const targetUsers = indicator.assignedTo
+    ? [indicator.assignedTo]
+    : indicator.assignedGroup || [];
+  for (const targetId of targetUsers) {
+    await notifyUser({
+      userId: targetId,
+      submittedBy: req.user._id,
+      title:
+        status === STATUS.APPROVED
+          ? "Submission Approved"
+          : "Submission Rejected",
+      message:
+        status === STATUS.APPROVED
+          ? `Your submission for ${indicator.indicatorTitle} has been accepted.`
+          : `Your submission for ${indicator.indicatorTitle} was rejected. Please review and resubmit.`,
+      type: status === STATUS.APPROVED ? "approval" : "rejection",
+      metadata: { indicatorId: indicator._id },
+    });
+  }
 
   res.status(200).json({ success: true, indicator });
 };
