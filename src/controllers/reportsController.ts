@@ -1,207 +1,304 @@
 import { Request, Response } from "express";
+import puppeteer, { Browser } from "puppeteer";
 import { Indicator } from "../models/Indicator";
-import puppeteer from "puppeteer";
+import { Types } from "mongoose";
+import { UserDocument } from "../models/User";
 
-/**
- * Builds the query with strict Role-Based Access Control (RBAC).
- * Ensures standard users can NEVER access the full registry.
- */
+/* ============================================================
+    QUERY BUILDER (HARDENED FOR DATA TYPES)
+============================================================ */
 const buildIndicatorQuery = (req: Request) => {
-  const { type, id, group } = req.query;
-  const user = req.user;
-  const query: any = {};
+  const user = req.user as UserDocument;
+  if (!user) throw new Error("Unauthorized");
 
-  const isAdmin = user?.role === "Admin" || user?.role === "SuperAdmin";
+  const query: Record<string, any> = {};
+  
+  // FIX 1: Case-insensitive role check
+  const userRole = user.role.toLowerCase();
+  const isAdmin = userRole === "admin" || userRole === "superadmin";
 
-  // 1. DATA ACCESS CONTROL
+  const type = (req.query.type as string | undefined)?.toLowerCase().trim();
+  const rawUserId = req.query.userId as string;
+
+  /* ---------------------------
+      ACCESS CONTROL
+  ---------------------------- */
   if (!isAdmin) {
-    // Standard Users: Always hard-limit to their assigned records
-    // regardless of the "type" they sent in the request.
-    query.$or = [{ assignedTo: user?._id }, { assignedGroup: user?._id }];
-  } else {
-    // Admins/SuperAdmins: Can filter by specific ID or Group
-    if (type === "single" && id) {
-      query._id = id;
-    } else if (type === "group" && group) {
-      query.assignedGroup = group;
-    }
-    // Note: If type is 'general', query remains {} (fetches all)
+    // Regular users only see what is assigned to them
+    query.$or = [
+      { assignedTo: user._id },
+      { assignedGroup: { $in: [user._id] } },
+    ];
+  } else if (rawUserId && rawUserId !== "undefined" && Types.ObjectId.isValid(rawUserId)) {
+    // Admin filtering for a specific user
+    const targetId = new Types.ObjectId(rawUserId);
+    query.$or = [
+      { assignedTo: targetId },
+      { assignedGroup: { $in: [targetId] } },
+    ];
   }
+  // If Admin and NO rawUserId, the query object remains empty {}, 
+  // which correctly fetches EVERYTHING.
 
-  // 2. TIME FILTERS (Applies to both roles, within their allowed scope)
-  if (type === "weekly") {
-    const start = new Date();
-    start.setDate(start.getDate() - 7);
-    query.createdAt = { $gte: start };
-  } else if (type === "quarterly") {
-    const now = new Date();
-    const startMonth = Math.floor(now.getMonth() / 3) * 3;
-    const startOfQuarter = new Date(now.getFullYear(), startMonth, 1);
-    query.createdAt = { $gte: startOfQuarter };
+  /* ---------------------------
+      DATE FILTERING
+  ---------------------------- */
+  const now = new Date();
+  
+  switch (type) {
+    case "single":
+      if (Types.ObjectId.isValid(req.query.id as string)) {
+        query._id = new Types.ObjectId(req.query.id as string);
+      }
+      break;
+
+    case "weekly": {
+      // Create a clean 14-day window around today
+      const start = new Date(now);
+      start.setDate(now.getDate() - 7);
+      start.setHours(0,0,0,0);
+      
+      const end = new Date(now);
+      end.setDate(now.getDate() + 7);
+      end.setHours(23,59,59,999);
+      
+      query.dueDate = { $gte: start, $lte: end };
+      break;
+    }
+
+    case "monthly": {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      query.dueDate = { $gte: startOfMonth, $lte: endOfMonth };
+      break;
+    }
+
+    case "group":
+      query.assignedToType = "group";
+      break;
+
+    case "general":
+    default:
+      // If "general" is selected, we remove date constraints to see all data
+      break;
   }
 
   return query;
 };
 
+/* ============================================================
+    HTML TEMPLATE (IMPROVED DATA HANDLING)
+============================================================ */
 const formatIndicatorsForHtml = (
   indicators: any[],
-  reportType: string,
-  role: string
-) => {
-  const now = new Date().toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
+  title: string,
+  user: UserDocument
+): string => {
+  const dateLabel = new Date().toLocaleString("en-KE");
+
+  const rows = indicators.map((i) => {
+    // Robust responsible party detection
+    let responsible = "Unassigned";
+    if (i.assignedToType === "individual" && i.assignedTo) {
+      responsible = `${i.assignedTo.name || 'Unknown'} (PJ: ${i.assignedTo.pjNumber || 'N/A'})`;
+    } else if (i.assignedGroup && i.assignedGroup.length > 0) {
+      responsible = i.assignedGroup.map((u: any) => u.name || u.pjNumber).join(", ");
+    }
+
+    return `
+      <tr>
+        <td>${i.indicatorTitle || "Untitled"}</td>
+        <td>${i.category?.title ?? "General"}</td>
+        <td>${responsible}</td>
+        <td>${(i.status || "N/A").toUpperCase()}</td>
+        <td>${i.progress || 0}%</td>
+        <td>${i.dueDate ? new Date(i.dueDate).toLocaleDateString("en-GB") : "No Date"}</td>
+      </tr>
+    `;
   });
 
-  // Access Scope Label for the PDF header
-  const accessLabel =
-    role === "Admin" || role === "SuperAdmin"
-      ? "GLOBAL REGISTRY VIEW"
-      : "PERSONAL ASSIGNMENT VIEW";
-
-  const rows = indicators
-    .map((i) => {
-      let responsibleParty = "Unassigned";
-
-      if (i.assignedToType === "individual" && i.assignedTo) {
-        responsibleParty =
-          i.assignedTo.username || i.assignedTo.name || "Unknown User";
-      } else if (i.assignedToType === "group" && i.assignedGroup?.length > 0) {
-        responsibleParty = i.assignedGroup
-          .map((u: any) => u.username || u.name || "Unknown")
-          .join(", ");
-      }
-
-      return `
-    <tr>
-      <td>
-        <div class="indicator-title">${i.indicatorTitle}</div>
-        <div class="subcategory">${
-          i.level2Category?.title || "Standard Registry"
-        }</div>
-      </td>
-      <td>${i.category?.title || "N/A"}</td>
-      <td><span class="badge ${
-        i.assignedToType
-      }">${responsibleParty}</span></td>
-      <td><span class="status-${i.status?.toLowerCase()}">${(
-        i.status || "pending"
-      ).toUpperCase()}</span></td>
-      <td class="progress-cell">
-        <div class="progress-text">${i.progress || 0}%</div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width: ${
-          i.progress || 0
-        }%"></div></div>
-      </td>
-      <td class="date-text">${
-        i.dueDate ? new Date(i.dueDate).toLocaleDateString() : "-"
-      }</td>
-    </tr>`;
-    })
-    .join("");
-
   return `
-  <!DOCTYPE html>
-  <html>
-    <head>
-      <style>
-        @page { size: A4 landscape; margin: 1cm; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1a1a1a; margin: 0; padding: 0; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #1a3a32; padding-bottom: 15px; margin-bottom: 25px; }
-        .logo { height: 70px; }
-        .report-info { text-align: right; }
-        .report-info h1 { margin: 0; color: #1a3a32; font-size: 20px; text-transform: uppercase; }
-        .report-info p { margin: 5px 0 0; color: #c2a336; font-weight: bold; font-size: 11px; }
-        .access-tag { font-size: 9px; color: #888; letter-spacing: 1px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th { background-color: #1a3a32; color: #ffffff; text-transform: uppercase; font-size: 10px; padding: 12px; text-align: left; }
-        td { padding: 12px; border-bottom: 1px solid #eee; font-size: 10px; vertical-align: middle; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 9px; }
-        .individual { background: #fef3c7; color: #92400e; }
-        .group { background: #dbeafe; color: #1e40af; }
-        .status-approved { color: #059669; font-weight: 800; }
-        .status-pending { color: #d97706; font-weight: 800; }
-        .progress-bar-bg { background: #e5e7eb; height: 8px; border-radius: 4px; width: 80px; }
-        .progress-bar-fill { background: #1a3a32; height: 100%; border-radius: 4px; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <img src="https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png" class="logo">
-        <div class="report-info">
-          <h1>ORHC Performance Report</h1>
-          <p>${reportType.toUpperCase()} REPORT | ${now}</p>
-          <div class="access-tag">${accessLabel}</div>
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Indicator Description</th>
-            <th>Category</th>
-            <th>Responsible Party</th>
-            <th>Status</th>
-            <th>Progress</th>
-            <th>Deadline</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </body>
-  </html>`;
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; color: #1a1a1a; line-height: 1.5; }
+  .header-container { border-bottom: 3px solid #1E3A2B; margin-bottom: 20px; padding-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }
+  th, td { padding: 12px; border: 1px solid #e0e0e0; font-size: 10px; text-align: left; word-wrap: break-word; }
+  th { background: #1E3A2B; color: #ffffff; text-transform: uppercase; }
+  h1 { margin: 0; color: #1E3A2B; font-size: 24px; }
+  .meta { font-size: 11px; margin-top: 10px; color: #444; }
+  .no-data { text-align: center; padding: 60px; color: #999; font-style: italic; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div class="header-container">
+    <h1>JUDICIARY PERFORMANCE SYSTEM</h1>
+    <div class="meta">
+      <strong>AUDIT TYPE:</strong> ${title}<br/>
+      <strong>OFFICER:</strong> ${user.name || 'System User'} | <strong>PJ:</strong> ${user.pjNumber || 'N/A'}<br/>
+      <strong>TIMESTAMP:</strong> ${dateLabel}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 25%;">Indicator</th>
+        <th style="width: 15%;">Category</th>
+        <th style="width: 25%;">Responsibility</th>
+        <th style="width: 12%;">Status</th>
+        <th style="width: 10%;">Progress</th>
+        <th style="width: 13%;">Due Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.length ? rows.join("") : `<tr><td colspan="6" class="no-data">No records found matching the criteria in the Judicial Database.</td></tr>`}
+    </tbody>
+  </table>
+</body>
+</html>
+`;
+};
+
+/* ============================================================
+    PUPPETEER & CONTROLLERS (UNCHANGED LOGIC)
+============================================================ */
+let browserInstance: Browser | null = null;
+const getBrowser = async () => {
+  if (!browserInstance || !browserInstance.isConnected()) {
+    browserInstance = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+  }
+  return browserInstance;
 };
 
 export const getReportPdf = async (req: Request, res: Response) => {
+  if (!req.user) return res.sendStatus(401);
+  let page;
   try {
     const query = buildIndicatorQuery(req);
     const indicators = await Indicator.find(query)
-      .populate("category level2Category")
-      .populate("assignedTo", "username name")
-      .populate("assignedGroup", "username name")
+      .populate("category", "title")
+      .populate("assignedTo", "name pjNumber")
+      .populate("assignedGroup", "name pjNumber")
       .lean();
 
-    const html = formatIndicatorsForHtml(
-      indicators,
-      (req.query.type as string) || "General",
-      req.user?.role || "User"
-    );
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox"],
-    });
-    const page = await browser.newPage();
+    const html = formatIndicatorsForHtml(indicators, `${req.query.type?.toString().toUpperCase() || "GENERAL"} REPORT`, req.user as UserDocument);
+    const browser = await getBrowser();
+    page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdf = await page.pdf({
-      format: "A4",
-      landscape: true,
-      printBackground: true,
-    });
-    await browser.close();
-
+    const pdf = await page.pdf({ format: "A4", landscape: true, printBackground: true });
     res.contentType("application/pdf").send(pdf);
-  } catch (err) {
-    res.status(500).json({ message: "PDF generation failed" });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (page) await page.close();
   }
 };
 
 export const getReportHtml = async (req: Request, res: Response) => {
+  if (!req.user) return res.sendStatus(401);
   try {
     const query = buildIndicatorQuery(req);
     const indicators = await Indicator.find(query)
-      .populate("category level2Category")
-      .populate("assignedTo", "username name")
-      .populate("assignedGroup", "username name")
+      .populate("category", "title")
+      .populate("assignedTo", "name pjNumber")
+      .populate("assignedGroup", "name pjNumber")
+      .lean();
+    const html = formatIndicatorsForHtml(indicators, `${req.query.type || "GENERAL"} PREVIEW`, req.user as UserDocument);
+    res.status(200).send(html);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * SINGLE INDICATOR PDF BY ID
+ */
+export const getReportPdfById = async (req: Request, res: Response) => {
+  if (!req.user)
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  const { id } = req.params;
+  let page;
+  try {
+    const user = req.user as UserDocument;
+    // Build query using ID and access rules
+    const query: any = { _id: new Types.ObjectId(id) };
+    if (user.role !== "Admin" && user.role !== "SuperAdmin") {
+      query.$or = [
+        { assignedTo: user._id },
+        { assignedGroup: { $in: [user._id] } },
+      ];
+    }
+
+    const indicator = await Indicator.findOne(query)
+      .populate("category", "title")
+      .populate("assignedTo", "name pjNumber")
+      .populate("assignedGroup", "name pjNumber")
       .lean();
 
+    if (!indicator)
+      return res
+        .status(404)
+        .json({ success: false, message: "Record not found" });
+
     const html = formatIndicatorsForHtml(
-      indicators,
-      (req.query.type as string) || "General",
-      req.user?.role || "User"
+      [indicator],
+      "Individual Record Audit",
+      user
     );
-    res.send(html);
-  } catch (err) {
-    res.status(500).json({ message: "HTML preview failed" });
+    const instance = await getBrowser();
+    page = await instance.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+
+    const pdf = await page.pdf({ format: "A4", printBackground: true });
+    res.contentType("application/pdf").send(pdf);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (page) await page.close();
+  }
+};
+
+/**
+ * SINGLE INDICATOR HTML BY ID
+ */
+export const getReportHtmlById = async (req: Request, res: Response) => {
+  if (!req.user)
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  const { id } = req.params;
+  try {
+    const user = req.user as UserDocument;
+    const query: any = { _id: new Types.ObjectId(id) };
+    if (user.role !== "Admin" && user.role !== "SuperAdmin") {
+      query.$or = [
+        { assignedTo: user._id },
+        { assignedGroup: { $in: [user._id] } },
+      ];
+    }
+
+    const indicator = await Indicator.findOne(query)
+      .populate("category", "title")
+      .populate("assignedTo", "name pjNumber")
+      .populate("assignedGroup", "name pjNumber")
+      .lean();
+
+    if (!indicator)
+      return res
+        .status(404)
+        .json({ success: false, message: "Record not found" });
+
+    const html = formatIndicatorsForHtml(
+      [indicator],
+      "Individual Preview",
+      user
+    );
+    res.status(200).send(html);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
   }
 };

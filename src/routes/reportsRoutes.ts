@@ -1,41 +1,54 @@
 import express from "express";
-import { getReportHtml, getReportPdf } from "../controllers/reportsController";
-import { isAuthenticated } from "../middleware/auth";
+import {
+  getReportHtml,
+  getReportPdf,
+  getReportHtmlById,
+  getReportPdfById,
+} from "../controllers/reportsController";
+import { isAuthenticated, isAuthorized } from "../middleware/auth";
 
 const router = express.Router();
 
+/* ============================================================
+   ADMIN / SUPERADMIN ROUTES (Global Access)
+============================================================ */
+
 /**
- * REPORTING ENDPOINTS
- * * Logic Summary:
- * 1. isAuthenticated: Ensures the user is logged in (populates req.user).
- * 2. Controller Logic: 
- * - If Admin/SuperAdmin: Fetches all data (General Report).
- * - If User: Automatically filters query to show only their assignments.
+ * @desc Generate Global Executive Reports (PDF)
+ * @access Private (Admin, SuperAdmin)
  */
-
-// HTML preview for browser
 router.get(
-  "/html", 
-  isAuthenticated, 
-  getReportHtml
-);
-
-// PDF generation for download
-router.get(
-  "/pdf", 
-  isAuthenticated, 
+  "/admin/get/pdf",
+  isAuthenticated,
+  // UPDATED: Match the PascalCase roles from your IUser model
+  isAuthorized("Admin", "SuperAdmin"), 
   getReportPdf
 );
 
 /**
- * OPTIONAL: Specific Admin-Only Route
- * If you ever need a report that ONLY Admins can even attempt to trigger
+ * @desc Preview Global Executive Reports (HTML)
+ * @access Private (Admin, SuperAdmin)
  */
-// router.get(
-//   "/admin-audit", 
-//   isAuthenticated, 
-//   isAuthorized("SuperAdmin", "Admin"), 
-//   getAdminAuditPdf
-// );
+router.get(
+  "/admin/get/html",
+  isAuthenticated,
+  // UPDATED: Match the PascalCase roles from your IUser model
+  isAuthorized("Admin", "SuperAdmin"),
+  getReportHtml
+);
+
+/* ============================================================
+   STANDARD USER ROUTES (Self-Access Only)
+============================================================ */
+
+router.get("/userpdf/pdf", isAuthenticated, getReportPdf);
+router.get("/userhtml/html", isAuthenticated, getReportHtml);
+
+/* ============================================================
+   INDICATOR-SPECIFIC REPORTS (By ID)
+============================================================ */
+
+router.get("/getpdf/pdf/:id", isAuthenticated, getReportPdfById);
+router.get("/gethtml/html/:id", isAuthenticated, getReportHtmlById);
 
 export default router;

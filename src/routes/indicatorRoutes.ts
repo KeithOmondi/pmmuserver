@@ -9,6 +9,8 @@ import {
   approveIndicator,
   rejectIndicator,
   getAllIndicators,
+  downloadEvidence,
+  getSubmittedIndicators,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -21,7 +23,7 @@ const router = express.Router();
 router.post(
   "/create",
   isAuthenticated,
-  isAuthorized("SuperAdmin"),
+  isAuthorized("superadmin"), // matches your controller role
   createIndicator
 );
 
@@ -31,19 +33,33 @@ router.post(
 router.put(
   "/update/:id",
   isAuthenticated,
-  isAuthorized("SuperAdmin", "Admin"),
+  isAuthorized("superadmin", "admin"),
   updateIndicator
 );
 
 /* ================================================
-   USER: SUBMIT EVIDENCE (Multiple files)
+   USER: SUBMIT EVIDENCE (multiple files)
 ================================================ */
 router.post(
   "/submit/:id",
   isAuthenticated,
-  upload.array("evidence"), // matches front-end field name
+  upload.fields([
+  { name: "files", maxCount: 10 },
+  { name: "descriptions", maxCount: 10 },
+]),
   submitIndicatorEvidence
 );
+
+/* =====================================
+   DOWNLOAD EVIDENCE (SIGNED URL)
+===================================== */
+router.get(
+  "/evidence/:publicId/download",
+  isAuthenticated,
+  downloadEvidence
+);
+
+router.get("/submitted", isAuthenticated, isAuthorized("superadmin", "admin"), getSubmittedIndicators);
 
 /* ================================================
    USER: GET MY ASSIGNED INDICATORS
@@ -61,7 +77,7 @@ router.get("/get/:id", isAuthenticated, getIndicatorById);
 router.get(
   "/all",
   isAuthenticated,
-  isAuthorized("SuperAdmin", "Admin"),
+  isAuthorized("superadmin", "admin"),
   getAllIndicators
 );
 
@@ -71,7 +87,7 @@ router.get(
 router.delete(
   "/delete/:id",
   isAuthenticated,
-  isAuthorized("SuperAdmin", "Admin"),
+  isAuthorized("superadmin", "admin"),
   deleteIndicator
 );
 
@@ -81,13 +97,14 @@ router.delete(
 router.put(
   "/approve/:id",
   isAuthenticated,
-  isAuthorized("SuperAdmin", "Admin"),
+  isAuthorized("superadmin", "admin"),
   approveIndicator
 );
+
 router.put(
   "/reject/:id",
   isAuthenticated,
-  isAuthorized("SuperAdmin", "Admin"),
+  isAuthorized("superadmin", "admin"),
   rejectIndicator
 );
 

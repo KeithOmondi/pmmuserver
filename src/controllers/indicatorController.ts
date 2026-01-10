@@ -1,29 +1,32 @@
 import { Request, Response, NextFunction } from "express";
 import Joi from "joi";
-import { Types } from "mongoose";
+import { Types, HydratedDocument } from "mongoose";
 import { Category, ICategory } from "../models/Category";
 import { Indicator, IIndicator, IEvidence } from "../models/Indicator";
 import { catchAsyncErrors } from "../middleware/catchAsyncErrors";
 import ErrorHandler from "../middleware/errorMiddlewares";
-import { uploadToCloudinary } from "../utils/cloudinary";
+import { uploadToCloudinary, cloudinary } from "../utils/cloudinary";
 import { logActivity } from "../utils/activityLogger";
 import { notifyUser } from "../services/notification.service";
+import axios from "axios";
 
-/* ================================================
+/* =====================================
    STATUS CONSTANTS
-================================================ */
-const STATUS = {
+===================================== */
+export const STATUS = {
   PENDING: "pending",
+  SUBMITTED: "submitted",
   APPROVED: "approved",
+  COMPLETED: "completed",
   REJECTED: "rejected",
   OVERDUE: "overdue",
 } as const;
 
-type StatusType = (typeof STATUS)[keyof typeof STATUS];
+export type StatusType = (typeof STATUS)[keyof typeof STATUS];
 
-/* ================================================
+/* =====================================
    AUTH TYPES
-================================================ */
+===================================== */
 export type MinimalUser = {
   _id: Types.ObjectId;
   role?: string;
@@ -33,81 +36,71 @@ export type AuthenticatedRequest = Request & {
   user?: MinimalUser;
 };
 
-/* ================================================
+/* =====================================
    ROLE HELPER
-================================================ */
-const hasRole = (userRole: string | undefined, roles: string[]) => {
-  if (!userRole) return false;
-  return roles.map((r) => r.toLowerCase()).includes(userRole.toLowerCase());
+===================================== */
+const hasRole = (role: string | undefined, roles: string[]) => {
+  if (!role) return false;
+  return roles.map((r) => r.toLowerCase()).includes(role.toLowerCase());
 };
 
-/* ================================================
-   VALIDATION SCHEMA
-================================================ */
-const indicatorValidator = Joi.object({
+/* =====================================
+   VALIDATION
+===================================== */
+const createIndicatorSchema = Joi.object({
   categoryId: Joi.string().required(),
   level2CategoryId: Joi.string().required(),
   indicatorId: Joi.string().required(),
-  unitOfMeasure: Joi.string().max(100).required(),
+  unitOfMeasure: Joi.string().required(),
   assignedToType: Joi.string().valid("individual", "group").required(),
   assignedTo: Joi.string().optional(),
   assignedGroup: Joi.array().items(Joi.string()).optional(),
   startDate: Joi.date().required(),
   dueDate: Joi.date().greater(Joi.ref("startDate")).required(),
-  notes: Joi.alternatives().try(Joi.string(), Joi.array()).optional(),
   calendarEvent: Joi.object().optional(),
 });
 
-/* ================================================
-   CATEGORY VALIDATION HELPERS
-================================================ */
+/* =====================================
+   CATEGORY HELPERS
+===================================== */
 const validateCategories = async (categoryId: string, level2Id: string) => {
   const main = await Category.findById(categoryId).lean<ICategory>();
-  if (!main) throw new ErrorHandler(404, "Main category not found");
-  if (main.level !== 1)
-    throw new ErrorHandler(400, "Main category must be level 1");
+  if (!main || main.level !== 1)
+    throw new ErrorHandler(400, "Invalid main category");
 
   const level2 = await Category.findById(level2Id).lean<ICategory>();
-  if (!level2) throw new ErrorHandler(404, "Level 2 category not found");
-  if (level2.level !== 2)
-    throw new ErrorHandler(400, "Level 2 category must be level 2");
+  if (!level2 || level2.level !== 2)
+    throw new ErrorHandler(400, "Invalid level 2 category");
 
   if (String(level2.parent) !== String(main._id))
-    throw new ErrorHandler(
-      400,
-      "Level 2 category does not belong under main category"
-    );
-
-  return { main, level2 };
+    throw new ErrorHandler(400, "Category hierarchy mismatch");
 };
 
 const resolveIndicatorTitle = async (indicatorId: string) => {
   const level3 = await Category.findById(indicatorId).lean<ICategory>();
   if (!level3 || level3.level !== 3)
-    throw new ErrorHandler(400, "Invalid Level 3 indicator");
+    throw new ErrorHandler(400, "Invalid indicator");
   return level3.title;
 };
 
-/* ================================================
+/* =====================================
    CREATE INDICATOR
-================================================ */
+===================================== */
+/* =====================================
+   CREATE INDICATOR
+===================================== */
 export const createIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // 1️⃣ Ensure user is authenticated and has role
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
     if (!hasRole(req.user.role, ["superadmin"]))
-      return next(
-        new ErrorHandler(403, "Only SuperAdmin can create indicators")
-      );
+      return next(new ErrorHandler(403, "Forbidden"));
 
-    const { error, value } = indicatorValidator.validate(req.body, {
-      abortEarly: false,
-      allowUnknown: true,
+    // 2️⃣ Validate client payload, strip unknown keys
+    const { error, value } = createIndicatorSchema.validate(req.body, {
+      stripUnknown: true, // removes any extra keys like indicatorTitle
     });
-
-    if (error || !value)
-      return next(
-        new ErrorHandler(400, error?.details[0]?.message || "Invalid input")
-      );
+    if (error) return next(new ErrorHandler(400, error.message));
 
     const {
       categoryId,
@@ -119,64 +112,44 @@ export const createIndicator = catchAsyncErrors(
       assignedGroup,
       startDate,
       dueDate,
-      notes,
       calendarEvent,
     } = value;
 
+    // 3️⃣ Validate category hierarchy
     await validateCategories(categoryId, level2CategoryId);
+
+    // 4️⃣ Compute indicatorTitle server-side
     const indicatorTitle = await resolveIndicatorTitle(indicatorId);
 
+    // 5️⃣ Create indicator
     const indicator = await Indicator.create({
       category: categoryId,
       level2Category: level2CategoryId,
-      indicatorTitle,
+      indicatorTitle, // server-computed
       unitOfMeasure,
       assignedToType,
       assignedTo,
-      assignedGroup: assignedGroup || [],
+      assignedGroup,
       startDate,
       dueDate,
-      notes: notes || [],
-      evidence: [],
       createdBy: req.user._id,
       status: STATUS.PENDING,
-      calendarEvent,
+      calendarEvent: calendarEvent || null,
     });
 
-    /** 🔔 NOTIFICATIONS: Assigned Users */
-    const assignedUsers =
-      assignedToType === "individual" ? [assignedTo] : assignedGroup || [];
-
-    for (const userId of assignedUsers) {
-      await notifyUser({
-        userId: new Types.ObjectId(userId),
-        title: "New Indicator Assigned",
-        message: `You have been assigned: ${indicatorTitle}`,
-        type: "assignment",
-        metadata: { indicatorId: indicator._id },
-      });
-    }
-
-    /** 📝 ACTIVITY LOG */
-    await logActivity({
-      user: req.user._id,
-      action: "CREATE_INDICATOR",
-      entity: "Indicator",
-      entityId: indicator._id,
-      meta: { assignedToType },
-    });
-
+    // 6️⃣ Respond
     res.status(201).json({ success: true, indicator });
   }
 );
 
-/* ================================================
+
+/* =====================================
    UPDATE INDICATOR
-================================================ */
+===================================== */
 export const updateIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-    if (!hasRole(req.user.role, ["superadmin", "admin"]))
+    if (!hasRole(req.user.role, ["admin", "superadmin"]))
       return next(new ErrorHandler(403, "Forbidden"));
 
     const indicator = await Indicator.findById(req.params.id);
@@ -189,9 +162,82 @@ export const updateIndicator = catchAsyncErrors(
   }
 );
 
-/* ================================================
+/* =====================================
+   DELETE INDICATOR
+===================================== */
+export const deleteIndicator = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+    if (!hasRole(req.user.role, ["superadmin"]))
+      return next(new ErrorHandler(403, "Forbidden"));
+
+    const indicator = await Indicator.findById(req.params.id);
+    if (!indicator) return next(new ErrorHandler(404, "Not found"));
+
+    await indicator.deleteOne();
+    res.status(200).json({ success: true });
+  }
+);
+
+/* =====================================
+   GET SINGLE INDICATOR
+===================================== */
+export const getIndicatorById = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false });
+
+    const indicator = await Indicator.findById(req.params.id)
+      .populate("category level2Category", "title")
+      .populate("createdBy reviewedBy", "name email")
+      .lean();
+
+    if (!indicator) return res.status(404).json({ success: false });
+
+    res.status(200).json({ success: true, indicator });
+  }
+);
+
+/* =====================================
+   GET ALL INDICATORS (ADMIN)
+===================================== */
+export const getAllIndicators = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false });
+    if (!hasRole(req.user.role, ["admin", "superadmin"]))
+      return res.status(403).json({ success: false });
+
+    const indicators = await Indicator.find()
+      .populate("category level2Category", "title")
+      .lean();
+
+    res.status(200).json({ success: true, indicators });
+  }
+);
+
+/* =====================================
+   GET SUBMITTED INDICATORS (ADMIN)
+===================================== */
+export const getSubmittedIndicators = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false });
+    if (!hasRole(req.user.role, ["admin", "superadmin"]))
+      return res.status(403).json({ success: false });
+
+    const indicators = await Indicator.find({
+      status: { $in: [STATUS.PENDING, STATUS.SUBMITTED, STATUS.APPROVED] },
+    })
+      .populate("category level2Category", "title")
+      .populate("createdBy reviewedBy", "name email")
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    res.status(200).json({ success: true, indicators });
+  }
+);
+
+/* =====================================
    GET INDICATORS ASSIGNED TO USER
-================================================ */
+===================================== */
 export const getUserIndicators = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user)
@@ -200,216 +246,125 @@ export const getUserIndicators = catchAsyncErrors(
     const userId = req.user._id;
 
     const indicators = await Indicator.find({
-      $or: [
-        { assignedToType: "individual", assignedTo: userId },
-        { assignedToType: "group", assignedGroup: { $in: [userId] } },
-      ],
+      $or: [{ assignedTo: userId }, { assignedGroup: userId }],
     })
-      .populate("category", "title code parent level")
-      .populate("level2Category", "title code parent level")
-      .populate("createdBy", "name email")
-      .populate("reviewedBy", "name email")
-      .sort({ createdAt: -1 })
-      .lean<IIndicator[]>();
+      .populate("category level2Category", "title")
+      .sort({ dueDate: 1 })
+      .lean();
 
     res.status(200).json({ success: true, indicators });
   }
 );
 
-/* ================================================
-   GET SINGLE INDICATOR
-================================================ */
-export const getIndicatorById = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.user)
-      return res.status(401).json({ success: false, message: "Unauthorized" });
+/* =====================================
+   DOWNLOAD EVIDENCE
+===================================== */
+export const downloadEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
-    const indicator = await Indicator.findById(req.params.id)
-      .populate("category level2Category", "title code")
-      .populate("createdBy", "name email")
-      .lean();
+    const { indicatorId, publicId } = req.params;
 
-    if (!indicator)
-      return res.status(404).json({ success: false, message: "Not found" });
+    const indicator = await Indicator.findById(indicatorId);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    const canView =
-      hasRole(req.user.role, ["superadmin", "admin"]) ||
-      indicator.assignedTo?.toString() === req.user._id.toString() ||
-      indicator.assignedGroup?.some(
-        (u) => u.toString() === req.user!._id.toString()
-      );
+    const userId = req.user._id;
+    const isAssigned =
+      indicator.assignedTo?.equals(userId) ||
+      indicator.assignedGroup.some((id) => id.equals(userId));
 
-    if (!canView)
-      return res.status(403).json({ success: false, message: "Forbidden" });
+    if (!isAssigned && !hasRole(req.user.role, ["admin", "superadmin"])) {
+      return next(new ErrorHandler(403, "Access denied"));
+    }
 
-    res.status(200).json({ success: true, indicator });
+    const evidence = indicator.evidence.find((e) => e.publicId === publicId);
+    if (!evidence) return next(new ErrorHandler(404, "Evidence not found"));
+
+    // 🔐 Authenticated Cloudinary URL (SIGNED)
+    const signedUrl = cloudinary.url(publicId, {
+      resource_type: "raw",
+      secure: true,
+      sign_url: true,
+      expires_at: Math.floor(Date.now() / 1000) + 60, // 1 minute
+    });
+
+    // ⬇️ Stream file through backend
+    const response = await axios.get(signedUrl, {
+      responseType: "stream",
+    });
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${evidence.fileName}"`
+    );
+    res.setHeader("Content-Type", response.headers["content-type"]);
+
+    response.data.pipe(res);
   }
 );
 
-/* ================================================
-   DELETE INDICATOR
-================================================ */
-export const deleteIndicator = catchAsyncErrors(
+/* =====================================
+   SUBMIT EVIDENCE
+===================================== */
+export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
     const indicator = await Indicator.findById(req.params.id);
-    if (!indicator) return next(new ErrorHandler(404, "Not found"));
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    if (
-      hasRole(req.user.role, ["admin"]) &&
-      indicator.createdBy.toString() !== req.user._id.toString()
-    )
-      return next(new ErrorHandler(403, "Forbidden"));
+    const files = (req.files as { [key: string]: Express.Multer.File[] })?.files;
 
-    await indicator.deleteOne();
+    if (!files || !files.length) {
+      return next(new ErrorHandler(400, "No files uploaded"));
+    }
 
-    res.status(200).json({ success: true });
-  }
-);
+    const evidence: IEvidence[] = [];
 
-/* ================================================
-   GET ALL INDICATORS (ADMIN)
-================================================ */
-export const getAllIndicators = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.user)
-      return res.status(401).json({ success: false, message: "Unauthorized" });
-
-    if (!hasRole(req.user.role, ["superadmin", "admin"]))
-      return res.status(403).json({ success: false, message: "Forbidden" });
-
-    const indicators = await Indicator.find()
-      .populate("category level2Category", "title code")
-      .populate("createdBy", "name email")
-      .lean<IIndicator[]>();
-
-    res.status(200).json({ success: true, indicators });
-  }
-);
-
-/* ================================================
-   SUBMIT INDICATOR EVIDENCE
-================================================ */
-export const submitIndicatorEvidence = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.user)
-      return res.status(401).json({ success: false, message: "Unauthorized" });
-
-    const userId = req.user._id; // ✅ safe because of the check above
-
-    const indicator = await Indicator.findById(req.params.id);
-    if (!indicator)
-      return res.status(404).json({ success: false, message: "Not found" });
-
-    // Check assignment
-    const isAssigned =
-      indicator.assignedTo?.toString() === userId.toString() ||
-      indicator.assignedGroup?.some((u) => u.toString() === userId.toString());
-
-    if (!isAssigned)
-      return res.status(403).json({ success: false, message: "Forbidden" });
-
-    if (!req.files || !Array.isArray(req.files))
-      return res.status(400).json({ success: false, message: "No files" });
-
-    const descriptions: string[] = Array.isArray(req.body.descriptions)
-      ? req.body.descriptions
-      : [];
-
-    const uploadedFiles: IEvidence[] = [];
-
-    for (let i = 0; i < req.files.length; i++) {
-      const file = req.files[i] as Express.Multer.File;
+    for (const file of files) {
       const upload = await uploadToCloudinary(
         file.buffer,
         "indicators",
         file.originalname
       );
 
-      uploadedFiles.push({
+      evidence.push({
         type: "file",
         fileUrl: upload.secure_url,
         publicId: upload.public_id,
         fileName: file.originalname,
         fileType: file.mimetype,
         fileSize: file.size,
-        description: descriptions[i] || "",
       });
     }
 
-    // Update indicator
-    indicator.evidence.push(...uploadedFiles);
+    indicator.evidence.push(...evidence);
+    indicator.status = STATUS.SUBMITTED;
     indicator.progress = Math.min(100, indicator.evidence.length * 10);
+
     await indicator.save();
-
-    /** 🔔 NOTIFICATIONS: Notify creator/admin and assigned users */
-    const notifyPromises: Promise<any>[] = [];
-
-    if (indicator.createdBy) {
-      notifyPromises.push(
-        notifyUser({
-          userId: indicator.createdBy,
-          title: "Indicator Evidence Submitted",
-          message: `${userId.toString()} submitted evidence for "${
-            indicator.indicatorTitle
-          }"`,
-          type: "assignment",
-          metadata: { indicatorId: indicator._id },
-        })
-      );
-    }
-
-    // Notify all assigned users except the submitter
-    const assignedUsers =
-      indicator.assignedToType === "individual"
-        ? [indicator.assignedTo]
-        : indicator.assignedGroup || [];
-
-    assignedUsers.forEach((assignedUserId) => {
-      if (assignedUserId && assignedUserId.toString() !== userId.toString()) {
-        notifyPromises.push(
-          notifyUser({
-            userId: new Types.ObjectId(assignedUserId),
-            title: "New Evidence Submitted",
-            message: `New evidence submitted for "${indicator.indicatorTitle}"`,
-            type: "assignment",
-            metadata: { indicatorId: indicator._id },
-          })
-        );
-      }
-    });
-
-    await Promise.all(notifyPromises);
-
-    /** 📝 ACTIVITY LOG */
-    await logActivity({
-      user: userId,
-      action: "SUBMIT_EVIDENCE",
-      entity: "Indicator",
-      entityId: indicator._id,
-      meta: { files: uploadedFiles.length },
-    });
 
     res.status(200).json({ success: true, indicator });
   }
 );
 
-/* ================================================
-   APPROVE / REJECT INDICATOR
-================================================ */
-const handleReviewStatus = async (
+
+
+/* =====================================
+   REVIEW (APPROVE / REJECT)
+===================================== */
+const reviewIndicator = async (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
   status: StatusType
 ) => {
   if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-  if (!hasRole(req.user.role, ["superadmin", "admin"]))
-    return next(new ErrorHandler(403, "Admins only"));
+  if (!hasRole(req.user.role, ["admin", "superadmin"]))
+    return next(new ErrorHandler(403, "Forbidden"));
 
   const indicator = await Indicator.findById(req.params.id);
-  if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+  if (!indicator) return next(new ErrorHandler(404, "Not found"));
 
   indicator.status = status;
   indicator.reviewedBy = req.user._id;
@@ -423,10 +378,10 @@ export const approveIndicator = (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-) => handleReviewStatus(req, res, next, STATUS.APPROVED);
+) => reviewIndicator(req, res, next, STATUS.APPROVED);
 
 export const rejectIndicator = (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-) => handleReviewStatus(req, res, next, STATUS.REJECTED);
+) => reviewIndicator(req, res, next, STATUS.REJECTED);
