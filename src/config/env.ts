@@ -8,9 +8,7 @@ config();
    ENV SCHEMA
 ========================= */
 const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "production", "test"])
-    .default("development"),
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.string().default("5000"),
 
   /* =========================
@@ -48,16 +46,21 @@ const envSchema = z.object({
   CLOUDINARY_CLOUD_NAME: z.string().nonempty(),
   CLOUDINARY_API_KEY: z.string().nonempty(),
   CLOUDINARY_API_SECRET: z.string().nonempty(),
+
+  /* =========================
+     CACHE
+  ========================= */
   REDIS_URL: z.string().nonempty(),
 
-  /*===================
-  SMTP
-  ====================*/
-
-  GMAIL_USER: z.string().nonempty(),
-  GMAIL_PASS: z.string().nonempty(),
-  GMAIL_FROM_NAME: z.string().nonempty(),
-  GMAIL_FROM_EMAIL: z.string().nonempty(),
+  /* =========================
+     EMAIL (BREVO)
+  ========================= */
+  BREVO_API_KEY: z.string().nonempty("BREVO_API_KEY is required"),
+  MAIL_FROM_NAME: z.string().default("ORHC"),
+  MAIL_FROM_EMAIL: z
+    .string()
+    .email("MAIL_FROM_EMAIL must be a valid email")
+    .default("onboarding@yourdomain.com"), // Replace with your preferred sender email
 });
 
 /* =========================
@@ -101,11 +104,9 @@ export const env = {
   REDIS_URL: parsed.data.REDIS_URL,
 
   /* =========================
-     EMAIL (GMAIL)
+     EMAIL (BREVO)
   ========================= */
-  GMAIL_USER: parsed.data.GMAIL_USER,
-  GMAIL_PASS: parsed.data.GMAIL_PASS,
-
-  GMAIL_FROM_NAME: parsed.data.GMAIL_FROM_NAME,
-  GMAIL_FROM_EMAIL: parsed.data.GMAIL_FROM_EMAIL,
+  BREVO_API_KEY: parsed.data.BREVO_API_KEY,
+  MAIL_FROM_NAME: parsed.data.MAIL_FROM_NAME,
+  MAIL_FROM_EMAIL: parsed.data.MAIL_FROM_EMAIL,
 };

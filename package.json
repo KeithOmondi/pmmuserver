@@ -30,6 +30,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@sendinblue/client": "^3.3.1",
     "adm-zip": "^0.5.16",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
@@ -51,6 +52,7 @@
     "puppeteer": "^24.34.0",
     "react-hot-toast": "^2.6.0",
     "redis": "^5.10.0",
+    "resend": "^6.7.0",
     "socket.io": "^4.8.1",
     "winston": "^3.19.0",
     "zod": "^4.1.13"
