@@ -8,7 +8,9 @@ config();
    ENV SCHEMA
 ========================= */
 const envSchema = z.object({
-  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
   PORT: z.string().default("5000"),
 
   /* =========================
@@ -24,14 +26,10 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().nonempty("JWT_REFRESH_SECRET is required"),
 
   // Access token lifetime
-  JWT_EXPIRES_IN: z
-    .enum(["5m", "15m", "30m", "1h", "1d"])
-    .default("15m"),
+  JWT_EXPIRES_IN: z.enum(["5m", "15m", "30m", "1h", "1d"]).default("15m"),
 
   // Refresh token lifetime
-  JWT_REFRESH_EXPIRES_IN: z
-    .enum(["1d", "7d", "30d"])
-    .default("7d"),
+  JWT_REFRESH_EXPIRES_IN: z.enum(["1d", "7d", "30d"]).default("7d"),
 
   /* =========================
      CLIENT
@@ -51,6 +49,15 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().nonempty(),
   CLOUDINARY_API_SECRET: z.string().nonempty(),
   REDIS_URL: z.string().nonempty(),
+
+  /*===================
+  SMTP
+  ====================*/
+
+  GMAIL_USER: z.string().nonempty(),
+  GMAIL_PASS: z.string().nonempty(),
+  GMAIL_FROM_NAME: z.string().nonempty(),
+  GMAIL_FROM_EMAIL: z.string().nonempty(),
 });
 
 /* =========================
@@ -79,7 +86,6 @@ export const env = {
   JWT_SECRET: parsed.data.JWT_SECRET,
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET,
 
-  // ✅ normalized for sendToken.ts
   JWT_EXPIRE: parsed.data.JWT_EXPIRES_IN,
   JWT_REFRESH_EXPIRE: parsed.data.JWT_REFRESH_EXPIRES_IN,
 
@@ -92,5 +98,14 @@ export const env = {
   CLOUDINARY_API_KEY: parsed.data.CLOUDINARY_API_KEY,
   CLOUDINARY_API_SECRET: parsed.data.CLOUDINARY_API_SECRET,
 
-  REDIS_URL: parsed.data.REDIS_URL
+  REDIS_URL: parsed.data.REDIS_URL,
+
+  /* =========================
+     EMAIL (GMAIL)
+  ========================= */
+  GMAIL_USER: parsed.data.GMAIL_USER,
+  GMAIL_PASS: parsed.data.GMAIL_PASS,
+
+  GMAIL_FROM_NAME: parsed.data.GMAIL_FROM_NAME,
+  GMAIL_FROM_EMAIL: parsed.data.GMAIL_FROM_EMAIL,
 };

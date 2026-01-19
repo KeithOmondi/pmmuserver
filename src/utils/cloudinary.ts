@@ -1,36 +1,30 @@
+// utils/cloudinary.ts
 import { v2 as cloudinary, UploadApiResponse } from "cloudinary";
 
-// -------------------------------------
-// Cloudinary Configuration
-// -------------------------------------
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
   api_key: process.env.CLOUDINARY_API_KEY!,
   api_secret: process.env.CLOUDINARY_API_SECRET!,
+  secure: true, // Forces helper methods to use HTTPS
 });
 
-// -------------------------------------
-// Upload buffer to Cloudinary
-// -------------------------------------
+// utils/cloudinary.ts
 export const uploadToCloudinary = async (
   fileBuffer: Buffer,
   folder: string,
-  originalFileName: string
+  publicId: string
 ): Promise<UploadApiResponse> => {
-  // 🔥 Remove extension from file name (CRITICAL)
-  const cleanName = originalFileName.replace(/\.[^/.]+$/, "");
-
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder,
-        public_id: cleanName,
-        resource_type: "auto", // images, pdfs, etc
+        public_id: publicId,
+        resource_type: "raw",     // 🔴 FIX
+        type: "authenticated",
+        overwrite: false,
       },
       (error, result) => {
-        if (error || !result) {
-          return reject(error);
-        }
+        if (error || !result) return reject(error);
         resolve(result);
       }
     );
@@ -39,7 +33,5 @@ export const uploadToCloudinary = async (
   });
 };
 
-// -------------------------------------
-// Export Cloudinary instance
-// -------------------------------------
+
 export { cloudinary };

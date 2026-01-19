@@ -5,89 +5,76 @@ import { Types } from "mongoose";
 import { UserDocument } from "../models/User";
 
 /* ============================================================
-    QUERY BUILDER (HARDENED FOR DATA TYPES)
+    QUERY BUILDER
 ============================================================ */
 const buildIndicatorQuery = (req: Request) => {
   const user = req.user as UserDocument;
   if (!user) throw new Error("Unauthorized");
 
   const query: Record<string, any> = {};
-  
-  // FIX 1: Case-insensitive role check
   const userRole = user.role.toLowerCase();
   const isAdmin = userRole === "admin" || userRole === "superadmin";
 
   const type = (req.query.type as string | undefined)?.toLowerCase().trim();
   const rawUserId = req.query.userId as string;
 
-  /* ---------------------------
-      ACCESS CONTROL
-  ---------------------------- */
   if (!isAdmin) {
-    // Regular users only see what is assigned to them
     query.$or = [
       { assignedTo: user._id },
       { assignedGroup: { $in: [user._id] } },
     ];
-  } else if (rawUserId && rawUserId !== "undefined" && Types.ObjectId.isValid(rawUserId)) {
-    // Admin filtering for a specific user
+  } else if (
+    rawUserId &&
+    rawUserId !== "undefined" &&
+    Types.ObjectId.isValid(rawUserId)
+  ) {
     const targetId = new Types.ObjectId(rawUserId);
     query.$or = [
       { assignedTo: targetId },
       { assignedGroup: { $in: [targetId] } },
     ];
   }
-  // If Admin and NO rawUserId, the query object remains empty {}, 
-  // which correctly fetches EVERYTHING.
 
-  /* ---------------------------
-      DATE FILTERING
-  ---------------------------- */
   const now = new Date();
-  
+
   switch (type) {
     case "single":
       if (Types.ObjectId.isValid(req.query.id as string)) {
         query._id = new Types.ObjectId(req.query.id as string);
       }
       break;
-
     case "weekly": {
-      // Create a clean 14-day window around today
       const start = new Date(now);
       start.setDate(now.getDate() - 7);
-      start.setHours(0,0,0,0);
-      
+      start.setHours(0, 0, 0, 0);
       const end = new Date(now);
       end.setDate(now.getDate() + 7);
-      end.setHours(23,59,59,999);
-      
+      end.setHours(23, 59, 59, 999);
       query.dueDate = { $gte: start, $lte: end };
       break;
     }
-
     case "monthly": {
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      const endOfMonth = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0,
+        23,
+        59,
+        59
+      );
       query.dueDate = { $gte: startOfMonth, $lte: endOfMonth };
       break;
     }
-
     case "group":
       query.assignedToType = "group";
       break;
-
-    case "general":
-    default:
-      // If "general" is selected, we remove date constraints to see all data
-      break;
   }
-
   return query;
 };
 
 /* ============================================================
-    HTML TEMPLATE (IMPROVED DATA HANDLING)
+    HTML TEMPLATE (JUDICIAL DESIGN)
 ============================================================ */
 const formatIndicatorsForHtml = (
   indicators: any[],
@@ -95,24 +82,38 @@ const formatIndicatorsForHtml = (
   user: UserDocument
 ): string => {
   const dateLabel = new Date().toLocaleString("en-KE");
+  // Official Placeholder for Judiciary Logo (Use a public URL to your hosted logo)
+  const LOGO_URL =
+    "https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png";
 
   const rows = indicators.map((i) => {
-    // Robust responsible party detection
     let responsible = "Unassigned";
     if (i.assignedToType === "individual" && i.assignedTo) {
-      responsible = `${i.assignedTo.name || 'Unknown'} (PJ: ${i.assignedTo.pjNumber || 'N/A'})`;
+      responsible = `${i.assignedTo.name || "Unknown"} (PJ: ${
+        i.assignedTo.pjNumber || "N/A"
+      })`;
     } else if (i.assignedGroup && i.assignedGroup.length > 0) {
-      responsible = i.assignedGroup.map((u: any) => u.name || u.pjNumber).join(", ");
+      responsible = i.assignedGroup
+        .map((u: any) => u.name || u.pjNumber)
+        .join(", ");
     }
 
     return `
       <tr>
-        <td>${i.indicatorTitle || "Untitled"}</td>
+        <td style="font-weight: bold; color: #1a3a32;">${
+          i.indicatorTitle || "Untitled"
+        }</td>
         <td>${i.category?.title ?? "General"}</td>
         <td>${responsible}</td>
-        <td>${(i.status || "N/A").toUpperCase()}</td>
-        <td>${i.progress || 0}%</td>
-        <td>${i.dueDate ? new Date(i.dueDate).toLocaleDateString("en-GB") : "No Date"}</td>
+        <td><span class="status-badge">${(
+          i.status || "N/A"
+        ).toUpperCase()}</span></td>
+        <td style="font-weight: bold;">${i.progress || 0}%</td>
+        <td>${
+          i.dueDate
+            ? new Date(i.dueDate).toLocaleDateString("en-GB")
+            : "No Date"
+        }</td>
       </tr>
     `;
   });
@@ -122,60 +123,107 @@ const formatIndicatorsForHtml = (
 <html>
 <head>
 <style>
-  body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; color: #1a1a1a; line-height: 1.5; }
-  .header-container { border-bottom: 3px solid #1E3A2B; margin-bottom: 20px; padding-bottom: 10px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }
-  th, td { padding: 12px; border: 1px solid #e0e0e0; font-size: 10px; text-align: left; word-wrap: break-word; }
-  th { background: #1E3A2B; color: #ffffff; text-transform: uppercase; }
-  h1 { margin: 0; color: #1E3A2B; font-size: 24px; }
-  .meta { font-size: 11px; margin-top: 10px; color: #444; }
-  .no-data { text-align: center; padding: 60px; color: #999; font-style: italic; font-size: 14px; }
+  @page { size: A4 landscape; margin: 10mm; }
+  body { font-family: 'Times New Roman', serif; padding: 20px; color: #1a1a1a; line-height: 1.4; background: #fff; }
+  
+  /* Top Golden Border */
+  .top-accent { height: 8px; background: #c2a336; margin-bottom: 20px; border-radius: 4px; }
+  
+  .header-table { width: 100%; border-bottom: 4px solid #1a3a32; padding-bottom: 15px; margin-bottom: 20px; }
+  .logo { width: 100px; height: auto; }
+  
+  h1 { margin: 0; color: #1a3a32; font-size: 32px; letter-spacing: -1px; text-transform: uppercase; font-weight: 900; }
+  .report-title { color: #c2a336; font-size: 18px; font-weight: bold; margin-top: 5px; text-transform: uppercase; letter-spacing: 2px; }
+  
+  .meta-box { background: #f9f9f9; padding: 15px; border-left: 5px solid #c2a336; margin-bottom: 20px; font-size: 14px; }
+  .meta-box strong { color: #1a3a32; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; border: 1px solid #1a3a32; }
+  th { background: #1a3a32; color: #ffffff; padding: 15px; font-size: 13px; text-align: left; text-transform: uppercase; border: 1px solid #1a3a32; }
+  td { padding: 12px; border: 1px solid #d1d1d1; font-size: 13px; text-align: left; word-wrap: break-word; }
+  
+  tr:nth-child(even) { background: #f2f4f3; }
+  
+  .status-badge { background: #e8eceb; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; color: #1a3a32; border: 1px solid #1a3a32; }
+  .footer { margin-top: 30px; text-align: center; font-size: 11px; color: #666; border-top: 1px solid #eee; padding-top: 10px; }
+  .no-data { text-align: center; padding: 60px; color: #999; font-style: italic; font-size: 16px; }
 </style>
 </head>
 <body>
-  <div class="header-container">
-    <h1>JUDICIARY PERFORMANCE SYSTEM</h1>
-    <div class="meta">
-      <strong>AUDIT TYPE:</strong> ${title}<br/>
-      <strong>OFFICER:</strong> ${user.name || 'System User'} | <strong>PJ:</strong> ${user.pjNumber || 'N/A'}<br/>
-      <strong>TIMESTAMP:</strong> ${dateLabel}
-    </div>
+  <div class="top-accent"></div>
+  
+  <table class="header-table" style="border:none;">
+    <tr style="background:none;">
+      <td style="border:none; width: 120px;"><img src="${LOGO_URL}" class="logo"></td>
+      <td style="border:none; vertical-align: middle;">
+        <h1>OFFICE OF THE REGISTRAR HIGH COURT</h1>
+        <div class="report-title">Performance Management and Measurement</div>
+      </td>
+      <td style="border:none; text-align: right; vertical-align: bottom;">
+        <div style="font-size: 12px; font-weight: bold; color: #1a3a32;">FORM J-PR-01</div>
+      </td>
+    </tr>
+  </table>
+
+  <div class="meta-box">
+    <table style="width: 100%; border: none; background: transparent;">
+       <tr style="background:none;"><td style="border:none; padding: 2px;"><strong>AUDIT CLASSIFICATION:</strong> ${title}</td></tr>
+       <tr style="background:none;"><td style="border:none; padding: 2px;"><strong>GENERATED BY:</strong> ${
+         user.name?.toUpperCase() || "SYSTEM"
+       } (PJ: ${user.pjNumber || "N/A"})</td></tr>
+       <tr style="background:none;"><td style="border:none; padding: 2px;"><strong>DATE OF ISSUE:</strong> ${dateLabel}</td></tr>
+    </table>
   </div>
 
   <table>
     <thead>
       <tr>
-        <th style="width: 25%;">Indicator</th>
-        <th style="width: 15%;">Category</th>
-        <th style="width: 25%;">Responsibility</th>
-        <th style="width: 12%;">Status</th>
-        <th style="width: 10%;">Progress</th>
-        <th style="width: 13%;">Due Date</th>
+        <th style="width: 25%;">Indicator Description</th>
+        <th style="width: 15%;">Unit/Category</th>
+        <th style="width: 25%;">Responsible Officer</th>
+        <th style="width: 14%;">Status</th>
+        <th style="width: 10%;">Score (%)</th>
+        <th style="width: 13%;">Deadline</th>
       </tr>
     </thead>
     <tbody>
-      ${rows.length ? rows.join("") : `<tr><td colspan="6" class="no-data">No records found matching the criteria in the Judicial Database.</td></tr>`}
+      ${
+        rows.length
+          ? rows.join("")
+          : `<tr><td colspan="6" class="no-data">No formal records found matching the criteria in the Judicial Registry.</td></tr>`
+      }
     </tbody>
   </table>
+
+  <div class="footer">
+    This is an officially generated report from the Judiciary Performance Management System. &copy; ${new Date().getFullYear()} Republic of Kenya.
+  </div>
 </body>
 </html>
 `;
 };
 
 /* ============================================================
-    PUPPETEER & CONTROLLERS (UNCHANGED LOGIC)
+    PUPPETEER BROWSER MANAGEMENT
 ============================================================ */
 let browserInstance: Browser | null = null;
 const getBrowser = async () => {
   if (!browserInstance || !browserInstance.isConnected()) {
     browserInstance = await puppeteer.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+      ],
     });
   }
   return browserInstance;
 };
 
+/* ============================================================
+    CONTROLLERS
+============================================================ */
 export const getReportPdf = async (req: Request, res: Response) => {
   if (!req.user) return res.sendStatus(401);
   let page;
@@ -187,11 +235,20 @@ export const getReportPdf = async (req: Request, res: Response) => {
       .populate("assignedGroup", "name pjNumber")
       .lean();
 
-    const html = formatIndicatorsForHtml(indicators, `${req.query.type?.toString().toUpperCase() || "GENERAL"} REPORT`, req.user as UserDocument);
+    const html = formatIndicatorsForHtml(
+      indicators,
+      `${req.query.type?.toString().toUpperCase() || "GENERAL"} AUDIT REPORT`,
+      req.user as UserDocument
+    );
     const browser = await getBrowser();
     page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdf = await page.pdf({ format: "A4", landscape: true, printBackground: true });
+    const pdf = await page.pdf({
+      format: "A4",
+      landscape: true,
+      printBackground: true,
+      margin: { top: "0px", bottom: "0px", left: "0px", right: "0px" },
+    });
     res.contentType("application/pdf").send(pdf);
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -209,7 +266,11 @@ export const getReportHtml = async (req: Request, res: Response) => {
       .populate("assignedTo", "name pjNumber")
       .populate("assignedGroup", "name pjNumber")
       .lean();
-    const html = formatIndicatorsForHtml(indicators, `${req.query.type || "GENERAL"} PREVIEW`, req.user as UserDocument);
+    const html = formatIndicatorsForHtml(
+      indicators,
+      `${req.query.type || "GENERAL"} PREVIEW`,
+      req.user as UserDocument
+    );
     res.status(200).send(html);
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });

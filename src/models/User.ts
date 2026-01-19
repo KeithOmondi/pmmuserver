@@ -1,6 +1,5 @@
 import mongoose, { Schema, Model, HydratedDocument } from "mongoose";
-import bcrypt from "bcryptjs";
-import crypto from "crypto";
+import { generateOTP } from "../utils/generateOTP";
 
 /* =========================
    TYPES
@@ -12,17 +11,26 @@ export interface IUser {
   name: string;
   email: string;
   pjNumber: string;
-  password: string;
   role: Role;
+
+  /* Account state */
   accountVerified: boolean;
+  accountLocked: boolean;
+
+  /* Activity tracking */
+  lastActivityAt?: Date;
+
+  /* Login OTP (hashed) */
+  loginOtp?: string;
+  loginOtpExpiry?: Date;
+
+  otpAttempts?: number;
+  otpBlockedUntil?: Date;
 
   avatar?: {
     url?: string;
     publicId?: string;
   };
-
-  resetPasswordToken?: string;
-  resetPasswordExpiry?: Date;
 }
 
 /* =========================
@@ -30,8 +38,9 @@ export interface IUser {
 ========================= */
 
 export interface IUserMethods {
-  comparePassword(enteredPassword: string): Promise<boolean>;
-  generateResetPasswordToken(): string;
+  generateLoginOtp(): string;
+  clearLoginOtp(): void;
+  isOtpExpired(): boolean;
 }
 
 /* =========================
@@ -52,68 +61,120 @@ const userSchema = new Schema<
   IUserMethods
 >(
   {
-    name: { type: String, required: true, trim: true },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
     email: {
       type: String,
       required: true,
       unique: true,
-      index: true,
       lowercase: true,
       trim: true,
-      match: [
-        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/,
-        "Invalid email",
-      ],
+      match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/, "Invalid email"],
     },
-    pjNumber: { type: String, required: true, unique: true, trim: true },
-    password: {
+
+    pjNumber: {
       type: String,
       required: true,
-      minlength: 8,
+      unique: true,
+      index: true,
+      trim: true,
+    },
+
+    role: {
+      type: String,
+      enum: roles,
+      default: "User",
+    },
+
+    accountVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    /**
+     * 🔒 Locked by default
+     */
+    accountLocked: {
+      type: Boolean,
+      default: true,
+    },
+
+    /**
+     * Used for inactivity lock
+     */
+    lastActivityAt: {
+      type: Date,
+    },
+
+    /**
+     * OTP (hashed)
+     */
+    loginOtp: {
+      type: String,
       select: false,
     },
-    role: { type: String, enum: roles, default: "User" },
-    accountVerified: { type: Boolean, default: false },
-    avatar: {
-      url: { type: String },
-      publicId: { type: String },
+
+    loginOtpExpiry: {
+      type: Date,
+      select: false,
     },
-    resetPasswordToken: { type: String, select: false },
-    resetPasswordExpiry: { type: Date },
+
+    otpAttempts: {
+      type: Number,
+      default: 0,
+    },
+
+    otpBlockedUntil: {
+      type: Date,
+    },
+
+    avatar: {
+      url: String,
+      publicId: String,
+    },
   },
-  { timestamps: true, versionKey: false }
+  {
+    timestamps: true,
+    versionKey: false,
+  }
 );
-
-/* =========================
-   PASSWORD HASHING
-========================= */
-
-userSchema.pre<UserDocument>("save", async function () {
-  if (!this.isModified("password")) return;
-  this.password = await bcrypt.hash(this.password, 12);
-});
 
 /* =========================
    METHODS
 ========================= */
 
-userSchema.methods.comparePassword = async function (
-  enteredPassword: string
-): Promise<boolean> {
-  return bcrypt.compare(enteredPassword, this.password);
+/**
+ * Generates OTP via shared utility
+ * Stores hashed OTP & expiry
+ * Returns plain OTP for delivery
+ */
+userSchema.methods.generateLoginOtp = function (): string {
+  const { otp, hashedOtp, expiresAt } = generateOTP();
+
+  this.loginOtp = hashedOtp;
+  this.loginOtpExpiry = expiresAt;
+
+  return otp;
 };
 
-userSchema.methods.generateResetPasswordToken = function (): string {
-  const resetToken = crypto.randomBytes(20).toString("hex");
+/**
+ * Clears OTP after verification
+ */
+userSchema.methods.clearLoginOtp = function (): void {
+  this.loginOtp = undefined;
+  this.loginOtpExpiry = undefined;
+};
 
-  this.resetPasswordToken = crypto
-    .createHash("sha256")
-    .update(resetToken)
-    .digest("hex");
-
-  this.resetPasswordExpiry = new Date(Date.now() + 15 * 60 * 1000);
-
-  return resetToken;
+/**
+ * OTP expiration check
+ */
+userSchema.methods.isOtpExpired = function (): boolean {
+  if (!this.loginOtpExpiry) return true;
+  return this.loginOtpExpiry.getTime() < Date.now();
 };
 
 /* =========================

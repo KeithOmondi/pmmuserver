@@ -70,7 +70,7 @@ const staff = [
     pjNumber: "80384",
     email: "moryn007@gmail.com",
   },
-  { name: "Kevin Omondi", pjNumber: "80224", email: "Kevomosh08@gmail.com" },
+  { name: "Kevin Omondi", pjNumber: "80224", email: "kevomosh08@gmail.com" },
   {
     name: "Margaret Wakuhi Kahura",
     pjNumber: "74732",
@@ -84,8 +84,8 @@ const staff = [
   { name: "James Kamotho", pjNumber: "66242", email: "jimkamau177@gmail.com" },
   {
     name: "Cynthia Atieno",
-    pjNumber: "66870",
-    email: "Cynthia.atieno06@gmail.com",
+    pjNumber: "68870",
+    email: "cynthia.atieno06@gmail.com",
   },
   {
     name: "Ken Okello Otieno",
@@ -109,7 +109,7 @@ const staff = [
     email: "samuelonyango263@gmail.com",
   },
   {
-    name: "Dennis Keith Oondi",
+    name: "Dennis Keith Omondi",
     pjNumber: "00045",
     email: "denniskeith62@gmail.com",
   },
@@ -131,21 +131,21 @@ const seedUsers = async () => {
     for (let i = 0; i < staff.length; i++) {
       const s = staff[i];
 
-      // Determine role
-      let role: "superAdmin" | "admin" | "user" = "user";
-      if (i === 0) role = "superAdmin";
-      else if (i === 1) role = "admin";
+      // Determine role using TitleCase to match schema
+      let role: "SuperAdmin" | "Admin" | "User" = "User";
+      if (i === 0) role = "SuperAdmin";
+      else if (i === 1) role = "Admin";
 
-      // Hash password (pjNumber)
+      // Hash password using pjNumber
       const hashedPassword = await bcrypt.hash(s.pjNumber, 10);
 
-      // Upsert user safely
+      // Upsert user safely (check by email OR pjNumber)
       await User.updateOne(
-        { $or: [{ email: s.email }, { pjNumber: s.pjNumber }] }, // check both unique keys
+        { $or: [{ email: s.email.toLowerCase() }, { pjNumber: s.pjNumber }] },
         {
           $setOnInsert: {
             name: s.name,
-            email: s.email,
+            email: s.email.toLowerCase(),
             pjNumber: s.pjNumber,
             password: hashedPassword,
             role,

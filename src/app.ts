@@ -12,6 +12,7 @@ import reportsRoutes from "./routes/reportsRoutes"
 import adminRoutes from "./routes/adminRoutes"
 import { errorHandler } from "./middleware/errorHandler";
 import { auditMiddleware } from "./middleware/auditMiddleware";
+import { inactivityMiddleware } from "./middleware/inactivityMiddleware";
 
 const app = express();
 
@@ -35,5 +36,6 @@ app.use("/api/v1/reports", reportsRoutes);
 app.use("/api/v1/admin", adminRoutes);
 
 app.use(errorHandler);
+app.use(inactivityMiddleware);
 
 export default app;

@@ -1,92 +1,293 @@
 import { Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
+
 import { User } from "../models/User";
 import { asyncHandler } from "../utils/asyncHandler";
 import { sendToken } from "../utils/sendToken";
 import { env } from "../config/env";
-import { logActivity } from "../utils/activityLogger"; // Import the logger
+import { logActivity } from "../utils/activityLogger";
+import {
+  OTP_MAX_ATTEMPTS,
+  OTP_BLOCK_DURATION_MINUTES,
+} from "../config/otpSecurity";
+import sendMail from "../utils/sendMail";
+import { otpLoginTemplate } from "../utils/mailTemplates";
 
-export const authController = {
-  // LOGIN
-  login: asyncHandler(async (req: Request, res: Response) => {
-    const { email, password } = req.body;
+/* =====================================================
+   REQUEST LOGIN OTP
+===================================================== */
+export const requestLoginOtp = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { pjNumber } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Missing credentials" });
+    if (!pjNumber) {
+      return res.status(400).json({ message: "PJ Number is required" });
     }
 
-    const user = await User.findOne({
-      email: email.toLowerCase().trim(),
-    }).select("+password");
+    const user = await User.findOne({ pjNumber });
 
-    if (!user || !(await user.comparePassword(password))) {
-      // Log failed attempt if user exists
-      // Inside LOGIN failure
-      if (user) {
+    if (!user) {
+      await logActivity({
+        user: "SYSTEM",
+        userName: pjNumber,
+        action: "UNKNOWN_PJ_LOGIN_ATTEMPT",
+        level: "warn",
+        meta: { ip: req.ip },
+      });
+
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Generate OTP
+    const otp = user.generateLoginOtp();
+    user.otpAttempts = 0;
+    user.otpBlockedUntil = undefined;
+
+    await user.save();
+
+    // Send OTP via email
+    try {
+      const mailContent = otpLoginTemplate({
+        name: user.name,
+        otp,
+        appUrl: env.FRONTEND_URL, // optional dashboard link
+      });
+
+      await sendMail({
+        to: user.email,
+        subject: mailContent.subject,
+        html: mailContent.html,
+        text: mailContent.text,
+      });
+
+      await logActivity({
+        user: user._id,
+        userName: user.name,
+        action: "LOGIN_OTP_SENT",
+        level: "info",
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "OTP sent successfully to your email",
+      });
+    } catch (err: any) {
+      console.error("Failed to send OTP email:", err);
+      return res.status(500).json({
+        message: "Failed to send OTP email",
+        error: err.message,
+      });
+    }
+  }
+);
+
+/* =====================================================
+   VERIFY OTP & LOGIN
+===================================================== */
+export const verifyLoginOtp = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { pjNumber, otp } = req.body;
+
+    if (!pjNumber || !otp) {
+      return res
+        .status(400)
+        .json({ message: "PJ Number and OTP are required" });
+    }
+
+    const user = await User.findOne({ pjNumber }).select(
+      "+loginOtp +loginOtpExpiry +otpAttempts +otpBlockedUntil"
+    );
+
+    if (!user || !user.loginOtp) {
+      return res.status(401).json({ message: "Invalid login attempt" });
+    }
+
+    // OTP temporary block check
+    if (user.otpBlockedUntil && user.otpBlockedUntil.getTime() > Date.now()) {
+      return res.status(429).json({
+        message: "Too many OTP attempts. Please try again later.",
+      });
+    }
+
+    // OTP expiry check
+    if (user.isOtpExpired()) {
+      user.clearLoginOtp();
+      user.otpAttempts = 0;
+      user.otpBlockedUntil = undefined;
+      await user.save();
+
+      return res.status(401).json({ message: "OTP expired" });
+    }
+
+    // OTP validation
+    const hashedInputOtp = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    if (hashedInputOtp !== user.loginOtp) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+
+      if (user.otpAttempts >= OTP_MAX_ATTEMPTS) {
+        user.otpBlockedUntil = new Date(
+          Date.now() + OTP_BLOCK_DURATION_MINUTES * 60 * 1000
+        );
+
         await logActivity({
           user: user._id,
-          userName: user.name, // We found the user, but password was wrong
-          action: "FAILED_LOGIN_ATTEMPT",
+          userName: user.name,
+          action: "OTP_BLOCKED_TOO_MANY_ATTEMPTS",
           level: "warn",
-          meta: { email, ip: req.ip },
-        });
-      } else {
-        // Optional: Log attempt for non-existent user
-        await logActivity({
-          user: "SYSTEM",
-          userName: email, // Use the email as the name for context
-          action: "UNKNOWN_USER_LOGIN_ATTEMPT",
-          level: "error",
         });
       }
-      return res.status(401).json({ message: "Invalid credentials" });
+
+      await user.save();
+      return res.status(401).json({ message: "Invalid OTP" });
     }
 
-    // Log successful login
+    // OTP success
+    user.clearLoginOtp();
+    user.otpAttempts = 0;
+    user.otpBlockedUntil = undefined;
+    user.accountLocked = false;
+    user.lastActivityAt = new Date();
+    await user.save();
+
     await logActivity({
       user: user._id,
       userName: user.name,
       action: "USER_LOGIN",
       level: "success",
-      meta: { role: user.role },
     });
 
     sendToken({
       user,
       statusCode: 200,
-      message: "Logged in successfully",
+      message: "Login successful",
       res,
     });
-  }),
+  }
+);
 
-  // LOGOUT
-  logout: asyncHandler(async (req: any, res: Response) => {
-    // Assuming you have the user on the req object via auth middleware
-    if (req.user) {
+/* =====================================================
+   RESEND LOGIN OTP
+===================================================== */
+export const resendLoginOtp = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { pjNumber } = req.body;
+
+    if (!pjNumber) {
+      return res.status(400).json({ message: "PJ Number is required" });
+    }
+
+    const user = await User.findOne({ pjNumber });
+    if (!user) {
       await logActivity({
-        user: req.user._id,
-        userName: req.user.name,
-        action: "USER_LOGOUT",
-        level: "info",
+        user: "SYSTEM",
+        userName: pjNumber,
+        action: "UNKNOWN_PJ_RESEND_ATTEMPT",
+        level: "warn",
+        meta: { ip: req.ip },
+      });
+
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Throttle resend: only allow if last OTP expired or 1 min passed
+    const lastOtpTime = user.loginOtpExpiry
+      ? user.loginOtpExpiry.getTime() - 5 * 60 * 1000
+      : 0;
+    if (user.loginOtp && Date.now() - lastOtpTime < 60 * 1000) {
+      return res.status(429).json({
+        message: "Please wait a minute before requesting a new OTP",
       });
     }
 
-    res
-      .clearCookie("refreshToken", {
-        httpOnly: true,
-        secure: env.NODE_ENV === "production",
-        sameSite: env.NODE_ENV === "production" ? "none" : "lax",
-        path: "/api/v1/auth/refresh",
-      })
-      .status(200)
-      .json({ success: true, message: "Logged out" });
-  }),
+    // Generate new OTP
+    const otp = user.generateLoginOtp();
+    user.otpAttempts = 0;
+    user.otpBlockedUntil = undefined;
+    await user.save();
 
-  // REFRESH ACCESS TOKEN
-  refreshToken: asyncHandler(async (req: Request, res: Response) => {
+    // Send email
+    try {
+      const mailContent = otpLoginTemplate({
+        name: user.name,
+        otp,
+        appUrl: env.FRONTEND_URL,
+      });
+
+      await sendMail({
+        to: user.email,
+        subject: mailContent.subject,
+        html: mailContent.html,
+        text: mailContent.text,
+      });
+
+      await logActivity({
+        user: user._id,
+        userName: user.name,
+        action: "LOGIN_OTP_RESENT",
+        level: "info",
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "OTP resent successfully to your email",
+      });
+    } catch (err: any) {
+      console.error("Failed to resend OTP email:", err);
+      return res.status(500).json({
+        message: "Failed to resend OTP email",
+        error: err.message,
+      });
+    }
+  }
+);
+
+/* =====================================================
+   LOGOUT
+===================================================== */
+export const logout = asyncHandler(async (req: any, res: Response) => {
+  if (req.user) {
+    // Invalidate ALL tokens immediately
+    req.user.tokenVersion += 1;
+    await req.user.save();
+
+    await logActivity({
+      user: req.user._id,
+      userName: req.user.name,
+      action: "USER_LOGOUT",
+      level: "info",
+    });
+  }
+
+  res
+    .clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: env.NODE_ENV === "production",
+      sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+      path: "/",
+    })
+    .status(200)
+    .json({
+      success: true,
+      message: "Logged out successfully",
+    });
+});
+
+
+/* =====================================================
+   REFRESH ACCESS TOKEN
+===================================================== */
+export const refreshToken = asyncHandler(
+  async (req: Request, res: Response) => {
     const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken)
+
+    if (!refreshToken) {
       return res.status(401).json({ message: "Not authenticated" });
+    }
 
     let payload: any;
     try {
@@ -96,10 +297,16 @@ export const authController = {
     }
 
     const user = await User.findById(payload.id);
-    if (!user) return res.status(401).json({ message: "User not found" });
 
-    // Optional: Log token refresh if you want high granularity
-    /* await logActivity({ user: user._id, action: "TOKEN_REFRESHED", level: "info" }); */
+    if (!user) {
+      return res.status(401).json({ message: "User not found" });
+    }
+
+    if (user.accountLocked) {
+      return res.status(401).json({
+        message: "Session expired due to inactivity",
+      });
+    }
 
     sendToken({
       user,
@@ -107,5 +314,5 @@ export const authController = {
       message: "Token refreshed",
       res,
     });
-  }),
-};
+  }
+);

@@ -11,6 +11,7 @@ import {
   getAllIndicators,
   downloadEvidence,
   getSubmittedIndicators,
+  updateIndicatorProgress,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -53,8 +54,9 @@ router.post(
 /* =====================================
    DOWNLOAD EVIDENCE (SIGNED URL)
 ===================================== */
+// Express Router
 router.get(
-  "/evidence/:publicId/download",
+  "/:indicatorId/evidence/:publicId/download", // Added :indicatorId prefix
   isAuthenticated,
   downloadEvidence
 );
@@ -106,6 +108,13 @@ router.put(
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
   rejectIndicator
+);
+
+router.patch(
+  "/:id/progress",
+  isAuthenticated,
+  isAuthorized("admin", "superadmin"), 
+  updateIndicatorProgress
 );
 
 export default router;

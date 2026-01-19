@@ -13,7 +13,10 @@ const allowedMimes = [
   "image/bmp",
   "image/webp",
   "application/pdf",
+  "application/zip",
+  "application/x-zip-compressed",
 ];
+
 
 // File filter
 const fileFilter = (req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
