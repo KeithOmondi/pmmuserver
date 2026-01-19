@@ -81,7 +81,9 @@ const staff = [
     pjNumber: "69541",
     email: "agnellamwakisha@gmail.com",
   },
+  
   { name: "James Kamotho", pjNumber: "66242", email: "jimkamau177@gmail.com" },
+
   {
     name: "Cynthia Atieno",
     pjNumber: "68870",
