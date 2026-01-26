@@ -1,7 +1,7 @@
 import mongoose, { Schema, Model, Types, HydratedDocument } from "mongoose";
 
 /* =====================================================
-   TYPES & INTERFACES
+    TYPES & INTERFACES
 ===================================================== */
 
 export type IndicatorStatus =
@@ -61,6 +61,8 @@ export interface IIndicator {
   createdBy: Types.ObjectId;
   status: IndicatorStatus;
 
+  rejectionCount: number; // 🟢 Added to track rejection history
+
   result?: "pass" | "fail" | null;
   reviewedBy?: Types.ObjectId | null;
   reviewedAt?: Date | null;
@@ -73,13 +75,13 @@ export interface IIndicator {
 }
 
 /* =====================================================
-   DOCUMENT TYPE
+    DOCUMENT TYPE
 ===================================================== */
 
 export type IndicatorDocument = HydratedDocument<IIndicator>;
 
 /* =====================================================
-   SUB-SCHEMAS
+    SUB-SCHEMAS
 ===================================================== */
 
 const evidenceSchema = new Schema<IEvidence>(
@@ -123,7 +125,7 @@ const noteSchema = new Schema<INote>(
 );
 
 /* =====================================================
-   MAIN SCHEMA
+    MAIN SCHEMA
 ===================================================== */
 
 const indicatorSchema = new Schema<IIndicator>(
@@ -175,6 +177,11 @@ const indicatorSchema = new Schema<IIndicator>(
       default: "pending",
     },
 
+    rejectionCount: { 
+      type: Number, 
+      default: 0 
+    }, // 🟢 Field initialized in schema
+
     result: { type: String, enum: ["pass", "fail"], default: null },
 
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
@@ -187,7 +194,7 @@ const indicatorSchema = new Schema<IIndicator>(
 );
 
 /* =====================================================
-   MODEL
+    MODEL
 ===================================================== */
 
 export const Indicator: Model<IIndicator> =
