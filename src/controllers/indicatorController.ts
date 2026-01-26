@@ -222,7 +222,7 @@ export const createIndicator = catchAsyncErrors(
           indicatorTitle,
           assignedBy,
           dueDate,
-          appUrl: `${env.FRONTEND_URL}/indicators/${indicator._id}`,
+          appUrl: `${env.FRONTEND_URL}/user/indicators/${indicator._id}`,
         });
         await sendMail({ to: user.email, ...mail });
       }
