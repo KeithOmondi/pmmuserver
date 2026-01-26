@@ -9,7 +9,6 @@ import {
   approveIndicator,
   rejectIndicator,
   getAllIndicators,
-  downloadEvidence,
   getSubmittedIndicators,
   updateIndicatorProgress,
 } from "../controllers/indicatorController";
@@ -49,16 +48,6 @@ router.post(
   { name: "descriptions", maxCount: 10 },
 ]),
   submitIndicatorEvidence
-);
-
-/* =====================================
-   DOWNLOAD EVIDENCE (SIGNED URL)
-===================================== */
-// Express Router
-router.get(
-  "/:indicatorId/evidence/:publicId/download", // Added :indicatorId prefix
-  isAuthenticated,
-  downloadEvidence
 );
 
 router.get("/submitted", isAuthenticated, isAuthorized("superadmin", "admin"), getSubmittedIndicators);

@@ -5,7 +5,9 @@ import { env } from "../config/env";
 
 let io: Server;
 
-// Initialize Socket.IO with authentication
+/* =====================================================
+   INITIALIZE SOCKET.IO (JWT AUTHENTICATED)
+===================================================== */
 export const initSocket = (server: HttpServer) => {
   io = new Server(server, {
     cors: {
@@ -14,34 +16,96 @@ export const initSocket = (server: HttpServer) => {
     },
   });
 
-  // Authenticate sockets using JWT
+  /* -----------------------------------------------------
+     AUTH MIDDLEWARE (JWT)
+  ----------------------------------------------------- */
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error("Unauthorized"));
+
+    if (!token) {
+      return next(new Error("Unauthorized"));
+    }
 
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as { id: string };
+      const decoded = jwt.verify(token, env.JWT_SECRET) as {
+        id: string;
+        role?: string;
+      };
+
       socket.data.userId = decoded.id;
-      socket.join(decoded.id); // auto join secure room
+      socket.data.role = decoded.role;
+
+      // 🔐 User private room
+      socket.join(decoded.id);
+
+      // 🔐 Optional role-based rooms
+      if (decoded.role === "admin" || decoded.role === "superadmin") {
+        socket.join("admins");
+      }
+
       next();
     } catch (err) {
-      next(new Error("Unauthorized"));
+      return next(new Error("Unauthorized"));
     }
   });
 
+  /* -----------------------------------------------------
+     CONNECTION HANDLER
+  ----------------------------------------------------- */
   io.on("connection", (socket) => {
-    console.log(`🟢 Socket connected: ${socket.id} (user ${socket.data.userId})`);
+    console.log(
+      `🟢 Socket connected: ${socket.id} (user ${socket.data.userId})`
+    );
 
     socket.on("disconnect", () => {
-      console.log(`🔴 Socket disconnected: ${socket.id} (user ${socket.data.userId})`);
+      console.log(
+        `🔴 Socket disconnected: ${socket.id} (user ${socket.data.userId})`
+      );
     });
   });
 
   return io;
 };
 
-// Getter for controllers/services
+/* =====================================================
+   SAFE IO GETTER
+===================================================== */
 export const getIO = () => {
-  if (!io) throw new Error("Socket.io not initialized");
+  if (!io) {
+    throw new Error("Socket.io not initialized");
+  }
   return io;
+};
+
+/* =====================================================
+   EMIT HELPERS (🔥 THIS IS THE KEY UPDATE 🔥)
+===================================================== */
+
+/**
+ * Notify a specific user that an indicator changed
+ * → used after approve / reject / update
+ */
+export const emitIndicatorUpdateToUser = (
+  userId: string,
+  payload: {
+    indicatorId: string;
+    status: string;
+  }
+) => {
+  if (!io) return;
+
+  io.to(userId).emit("indicator:updated", payload);
+};
+
+/**
+ * Notify admins that something changed
+ * → dashboard auto-refresh
+ */
+export const emitIndicatorUpdateToAdmins = (payload: {
+  indicatorId: string;
+  status: string;
+}) => {
+  if (!io) return;
+
+  io.to("admins").emit("admin:indicator:updated", payload);
 };

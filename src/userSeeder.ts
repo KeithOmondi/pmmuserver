@@ -13,7 +13,7 @@ const staff = [
   {
     name: "Lavenda Awuor Ochieng",
     pjNumber: "74693",
-    email: "lavendaochieng@gmail.com",
+    email: "lavenda.ochieng@court.go.ke",
   },
   {
     name: "Hon. Jane Kemunto Ocharo",
@@ -35,7 +35,7 @@ const staff = [
     pjNumber: "46446",
     email: "edithmalizu@gmail.com",
   },
-  { name: "Richard Otene", pjNumber: "37078", email: "wakiliotene@gmail.com" },
+
   {
     name: "Joslyne Kathure Ndubi",
     pjNumber: "56394",
@@ -119,6 +119,18 @@ const staff = [
     name: "Britney Achieng Ouma",
     pjNumber: "000132",
     email: "oumabritney@gmail.com",
+  },
+
+  {
+    name: "Emili Masawa",
+    pjNumber: "47688",
+    email: "emilymasawa1@gmail.com",
+  },
+
+   {
+    name: "Lilian Udoto",
+    pjNumber: "56459",
+    email: "udotol@yahoo.co.uk",
   },
 ];
 

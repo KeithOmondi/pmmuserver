@@ -5,10 +5,9 @@ cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
   api_key: process.env.CLOUDINARY_API_KEY!,
   api_secret: process.env.CLOUDINARY_API_SECRET!,
-  secure: true, // Forces helper methods to use HTTPS
+  secure: true,
 });
 
-// utils/cloudinary.ts
 export const uploadToCloudinary = async (
   fileBuffer: Buffer,
   folder: string,
@@ -18,9 +17,10 @@ export const uploadToCloudinary = async (
     const stream = cloudinary.uploader.upload_stream(
       {
         folder,
-        public_id: publicId,
-        resource_type: "raw",     // 🔴 FIX
-        type: "authenticated",
+        public_id: `${Date.now()}-${publicId}`, // Prevent collisions
+        resource_type: "auto", // Handles Images, PDFs, and Videos
+        type: "authenticated", // Secure access requirement
+        flags: "attachment:false", // 🟢 Update: Hint to allow inline viewing
         overwrite: false,
       },
       (error, result) => {
@@ -28,10 +28,8 @@ export const uploadToCloudinary = async (
         resolve(result);
       }
     );
-
     stream.end(fileBuffer);
   });
 };
-
 
 export { cloudinary };
