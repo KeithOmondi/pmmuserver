@@ -2,8 +2,6 @@ import { Request, Response, NextFunction } from "express";
 import Joi from "joi";
 import { Types } from "mongoose";
 import path from "path";
-import AdmZip from "adm-zip";
-import mime from "mime-types"; // 🟢 Recommended: npm install mime-types
 
 import { Category, ICategory } from "../models/Category";
 import { Indicator, IEvidence } from "../models/Indicator";
@@ -24,8 +22,9 @@ import {
 } from "../sockets/socket";
 
 /* =====================================================
-    STATUS CONSTANTS
+ STATUS
 ===================================================== */
+
 export const STATUS = {
   PENDING: "pending",
   SUBMITTED: "submitted",
@@ -38,8 +37,9 @@ export const STATUS = {
 export type StatusType = (typeof STATUS)[keyof typeof STATUS];
 
 /* =====================================================
-    AUTH TYPES
+ TYPES
 ===================================================== */
+
 export type MinimalUser = {
   _id: Types.ObjectId;
   role?: string;
@@ -53,42 +53,51 @@ export type AuthenticatedRequest = Request & {
 };
 
 /* =====================================================
-    ROLE HELPER
+ HELPERS
 ===================================================== */
+
 const hasRole = (role: string | undefined, allowed: string[]) =>
   !!role && allowed.map((r) => r.toLowerCase()).includes(role.toLowerCase());
 
-/* =====================================================
-    VALIDATION
-===================================================== */
 const objectId = Joi.string().hex().length(24);
+
+/* =====================================================
+ JOI
+===================================================== */
 
 const createIndicatorSchema = Joi.object({
   categoryId: objectId.required(),
   level2CategoryId: objectId.required(),
   indicatorId: objectId.required(),
-  unitOfMeasure: Joi.string().trim().required(),
+  unitOfMeasure: Joi.string().required(),
+
   assignedToType: Joi.string().valid("individual", "group").required(),
-  assignedTo: objectId.optional(),
+
+  assignedTo: objectId.allow(null).optional(),
   assignedGroup: Joi.array().items(objectId).optional(),
+
   startDate: Joi.date().required(),
   dueDate: Joi.date().greater(Joi.ref("startDate")).required(),
+
   calendarEvent: Joi.object().optional(),
 }).custom((value, helpers) => {
   const hasIndividual = !!value.assignedTo;
   const hasGroup =
     Array.isArray(value.assignedGroup) && value.assignedGroup.length > 0;
+
   if (!hasIndividual && !hasGroup) {
     return helpers.error("any.custom", {
-      message: "At least one assignee (individual or group) is required",
+      message: "At least one assignee is required",
     });
   }
+
   return value;
 });
 
 /* =====================================================
-    CATEGORY HELPERS
+ CATEGORY VALIDATION
 ===================================================== */
+
 const validateCategories = async (categoryId: string, level2Id: string) => {
   const main = await Category.findById(categoryId).lean<ICategory>();
   if (!main || main.level !== 1)
@@ -106,34 +115,31 @@ const resolveIndicatorTitle = async (indicatorId: string) => {
   const indicator = await Category.findById(indicatorId).lean<ICategory>();
   if (!indicator || indicator.level !== 3)
     throw new ErrorHandler(400, "Invalid indicator");
+
   return indicator.title;
 };
 
 /* =====================================================
-    CLOUDINARY NORMALIZERS
+ EVIDENCE BUILDER
 ===================================================== */
-const normalizeResourceType = (type: string): "raw" | "image" | "video" =>
-  type === "image" || type === "video" || type === "raw" ? type : "raw";
 
-/* =====================================================
-    EVIDENCE BUILDER (MODIFIED FOR INLINE PREVIEW)
-===================================================== */
 const buildEvidence = (
   upload: any,
   fileName: string,
   fileSize: number,
   mimeType: string,
-  description = ""
+  description = "",
 ): IEvidence => {
-  
-  // 🟢 THE "NUKES FROM ORBIT" FIX:
-  // We use private_download_url because it allows explicit control over the attachment flag.
-  const signedUrl = cloudinary.utils.private_download_url(upload.public_id, upload.format, {
-    resource_type: upload.resource_type,
-    type: "authenticated",
-    expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-    attachment: false, // 👈 THIS IS THE KEY: Forces Content-Disposition: inline
-  });
+  const signedUrl = cloudinary.utils.private_download_url(
+    upload.public_id,
+    upload.format,
+    {
+      resource_type: upload.resource_type,
+      type: "authenticated",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      attachment: false,
+    },
+  );
 
   return {
     type: "file",
@@ -142,26 +148,43 @@ const buildEvidence = (
     mimeType,
     description,
     publicId: upload.public_id,
-    resourceType: upload.resource_type === "image" || upload.resource_type === "video" ? upload.resource_type : "raw",
+    resourceType:
+      upload.resource_type === "image" || upload.resource_type === "video"
+        ? upload.resource_type
+        : "raw",
     cloudinaryType: "authenticated",
-    format: upload.format || fileName.split('.').pop() || "bin",
-    previewUrl: signedUrl, 
+    format: upload.format || "bin",
+    previewUrl: signedUrl,
   };
 };
 
 /* =====================================================
-    CREATE INDICATOR
+ CREATE INDICATOR
 ===================================================== */
+
 export const createIndicator = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+  async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw new ErrorHandler(401, "Unauthorized");
     if (!hasRole(req.user.role, ["superadmin"]))
-      return next(new ErrorHandler(403, "Forbidden"));
+      throw new ErrorHandler(403, "Forbidden");
+
+    /* 🔥 NORMALIZATION (CRITICAL) */
+
+    if (req.body.assignedTo === "") delete req.body.assignedTo;
+
+    if (!Array.isArray(req.body.assignedGroup)) {
+      req.body.assignedGroup = [];
+    }
+
+    if (typeof req.body.assignedGroup === "string") {
+      req.body.assignedGroup = [req.body.assignedGroup];
+    }
 
     const { error, value } = createIndicatorSchema.validate(req.body, {
       stripUnknown: true,
     });
-    if (error) return next(new ErrorHandler(400, error.message));
+
+    if (error) throw new ErrorHandler(400, error.message);
 
     const {
       categoryId,
@@ -185,8 +208,8 @@ export const createIndicator = catchAsyncErrors(
       indicatorTitle,
       unitOfMeasure,
       assignedToType,
-      assignedTo,
-      assignedGroup,
+      assignedTo: assignedTo || null,
+      assignedGroup: assignedGroup || [],
       startDate,
       dueDate,
       calendarEvent: calendarEvent ?? null,
@@ -195,7 +218,7 @@ export const createIndicator = catchAsyncErrors(
     });
 
     const admin = await User.findById(req.user._id).select("name");
-    const assignedBy = admin?.name ?? "Judicial Administrator";
+    const assignedBy = admin?.name ?? "Administrator";
 
     const targets = new Set<string>();
     if (assignedTo) targets.add(assignedTo);
@@ -205,8 +228,8 @@ export const createIndicator = catchAsyncErrors(
       await notifyUser({
         userId: new Types.ObjectId(userId),
         submittedBy: req.user._id,
-        title: "New Performance Indicator Assigned",
-        message: `You have been assigned: ${indicatorTitle}`,
+        title: "New Indicator Assigned",
+        message: indicatorTitle,
         type: "assignment",
         metadata: { indicatorId: indicator._id },
       });
@@ -463,6 +486,10 @@ export const getSubmittedIndicators = catchAsyncErrors(async (req, res) => {
   res.json({ success: true, indicators });
 });
 
+/* =====================================================
+ USER INDICATORS
+===================================================== */
+
 export const getUserIndicators = catchAsyncErrors(async (req, res) => {
   const indicators = await Indicator.find({
     $or: [{ assignedTo: req.user?._id }, { assignedGroup: req.user?._id }],
@@ -470,5 +497,6 @@ export const getUserIndicators = catchAsyncErrors(async (req, res) => {
     .populate("category level2Category", "title")
     .sort({ dueDate: 1 })
     .lean();
+
   res.json({ success: true, indicators });
 });

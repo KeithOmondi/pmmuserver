@@ -14,23 +14,16 @@ export type IndicatorStatus =
 
 export interface IEvidence {
   type: "file";
-
-  /* Display metadata */
   fileName: string;
   fileSize: number;
   mimeType: string;
   description?: string;
 
-  /* Cloudinary identity */
   publicId: string;
   resourceType: "raw" | "image" | "video";
   cloudinaryType: "authenticated" | "upload";
   format: string;
 
-  /**
-   * URL CONTRACT (ENFORCED)
-   * previewUrl  → INLINE (iframe/img/video)
-   */
   previewUrl: string;
 }
 
@@ -47,8 +40,8 @@ export interface IIndicator {
   unitOfMeasure: string;
 
   assignedToType: "individual" | "group";
-  assignedTo?: Types.ObjectId;
-  assignedGroup: Types.ObjectId[];
+  assignedTo?: Types.ObjectId | null;
+  assignedGroup?: Types.ObjectId[];
 
   startDate: Date;
   dueDate: Date;
@@ -61,7 +54,7 @@ export interface IIndicator {
   createdBy: Types.ObjectId;
   status: IndicatorStatus;
 
-  rejectionCount: number; // 🟢 Added to track rejection history
+  rejectionCount: number;
 
   result?: "pass" | "fail" | null;
   reviewedBy?: Types.ObjectId | null;
@@ -74,24 +67,19 @@ export interface IIndicator {
   updatedAt: Date;
 }
 
-/* =====================================================
-    DOCUMENT TYPE
-===================================================== */
-
 export type IndicatorDocument = HydratedDocument<IIndicator>;
 
 /* =====================================================
-    SUB-SCHEMAS
+    SUB SCHEMAS
 ===================================================== */
 
 const evidenceSchema = new Schema<IEvidence>(
   {
     type: { type: String, enum: ["file"], required: true },
-
     fileName: { type: String, required: true },
     fileSize: { type: Number, required: true },
     mimeType: { type: String, required: true },
-    description: { type: String },
+    description: String,
 
     publicId: { type: String, required: true },
 
@@ -108,8 +96,6 @@ const evidenceSchema = new Schema<IEvidence>(
     },
 
     format: { type: String, required: true },
-
-    /* ENFORCED URL */
     previewUrl: { type: String, required: true },
   },
   { _id: false },
@@ -145,8 +131,18 @@ const indicatorSchema = new Schema<IIndicator>(
       enum: ["individual", "group"],
       required: true,
     },
-    assignedTo: { type: Schema.Types.ObjectId, ref: "User" },
-    assignedGroup: { type: [Schema.Types.ObjectId], ref: "User", default: [] },
+
+    assignedTo: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    assignedGroup: {
+      type: [Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
 
     startDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
@@ -177,10 +173,7 @@ const indicatorSchema = new Schema<IIndicator>(
       default: "pending",
     },
 
-    rejectionCount: { 
-      type: Number, 
-      default: 0 
-    }, // 🟢 Field initialized in schema
+    rejectionCount: { type: Number, default: 0 },
 
     result: { type: String, enum: ["pass", "fail"], default: null },
 
@@ -192,6 +185,18 @@ const indicatorSchema = new Schema<IIndicator>(
   },
   { timestamps: true },
 );
+
+/* =====================================================
+   ASSIGNMENT VALIDATOR (NO next(), NO middleware)
+===================================================== */
+
+indicatorSchema.path("assignedGroup").validate(function () {
+  const hasIndividual = !!this.assignedTo;
+  const hasGroup =
+    Array.isArray(this.assignedGroup) && this.assignedGroup.length > 0;
+
+  return hasIndividual || hasGroup;
+}, "At least one assignee (individual or group) is required");
 
 /* =====================================================
     MODEL
