@@ -33,20 +33,22 @@ router.post(
 router.put(
   "/update/:id",
   isAuthenticated,
-  isAuthorized("superadmin", "admin"),
+  isAuthorized("superadmin"),
   updateIndicator
 );
 
 /* ================================================
    USER: SUBMIT EVIDENCE (multiple files)
 ================================================ */
+/* ================================================
+   USER: SUBMIT EVIDENCE (multiple files)
+================================================ */
 router.post(
   "/submit/:id",
   isAuthenticated,
-  upload.fields([
-  { name: "files", maxCount: 10 },
-  { name: "descriptions", maxCount: 10 },
-]),
+  // Use upload.array to target the "files" field specifically.
+  // This handles the binary files and ignores the text "descriptions".
+  upload.array("files", 10), 
   submitIndicatorEvidence
 );
 
@@ -78,7 +80,7 @@ router.get(
 router.delete(
   "/delete/:id",
   isAuthenticated,
-  isAuthorized("superadmin", "admin"),
+  isAuthorized("superadmin"),
   deleteIndicator
 );
 

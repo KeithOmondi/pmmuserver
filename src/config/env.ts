@@ -9,7 +9,7 @@ config();
 ========================= */
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  PORT: z.string().default("5000"),
+  PORT: z.string().default("8000"),
 
   /* =========================
      DATABASE

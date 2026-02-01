@@ -28,8 +28,8 @@ import {
 export const STATUS = {
   PENDING: "pending",
   SUBMITTED: "submitted",
-  APPROVED: "approved",
-  COMPLETED: "completed",
+  APPROVED: "approved", // Admin Approved
+  COMPLETED: "completed", // Superadmin Approved
   REJECTED: "rejected",
   OVERDUE: "overdue",
 } as const;
@@ -70,27 +70,21 @@ const createIndicatorSchema = Joi.object({
   level2CategoryId: objectId.required(),
   indicatorId: objectId.required(),
   unitOfMeasure: Joi.string().required(),
-
   assignedToType: Joi.string().valid("individual", "group").required(),
-
   assignedTo: objectId.allow(null).optional(),
   assignedGroup: Joi.array().items(objectId).optional(),
-
   startDate: Joi.date().required(),
   dueDate: Joi.date().greater(Joi.ref("startDate")).required(),
-
   calendarEvent: Joi.object().optional(),
 }).custom((value, helpers) => {
   const hasIndividual = !!value.assignedTo;
   const hasGroup =
     Array.isArray(value.assignedGroup) && value.assignedGroup.length > 0;
-
   if (!hasIndividual && !hasGroup) {
     return helpers.error("any.custom", {
       message: "At least one assignee is required",
     });
   }
-
   return value;
 });
 
@@ -115,7 +109,6 @@ const resolveIndicatorTitle = async (indicatorId: string) => {
   const indicator = await Category.findById(indicatorId).lean<ICategory>();
   if (!indicator || indicator.level !== 3)
     throw new ErrorHandler(400, "Invalid indicator");
-
   return indicator.title;
 };
 
@@ -168,22 +161,14 @@ export const createIndicator = catchAsyncErrors(
     if (!hasRole(req.user.role, ["superadmin"]))
       throw new ErrorHandler(403, "Forbidden");
 
-    /* 🔥 NORMALIZATION (CRITICAL) */
-
     if (req.body.assignedTo === "") delete req.body.assignedTo;
-
-    if (!Array.isArray(req.body.assignedGroup)) {
-      req.body.assignedGroup = [];
-    }
-
-    if (typeof req.body.assignedGroup === "string") {
+    if (!Array.isArray(req.body.assignedGroup)) req.body.assignedGroup = [];
+    if (typeof req.body.assignedGroup === "string")
       req.body.assignedGroup = [req.body.assignedGroup];
-    }
 
     const { error, value } = createIndicatorSchema.validate(req.body, {
       stripUnknown: true,
     });
-
     if (error) throw new ErrorHandler(400, error.message);
 
     const {
@@ -217,8 +202,8 @@ export const createIndicator = catchAsyncErrors(
       status: STATUS.PENDING,
     });
 
-    const admin = await User.findById(req.user._id).select("name");
-    const assignedBy = admin?.name ?? "Administrator";
+    const adminUser = await User.findById(req.user._id).select("name");
+    const assignedBy = adminUser?.name ?? "Administrator";
 
     const targets = new Set<string>();
     if (assignedTo) targets.add(assignedTo);
@@ -255,57 +240,68 @@ export const createIndicator = catchAsyncErrors(
       indicatorId: indicator._id.toString(),
       status: indicator.status,
     });
-
-    await logActivity({
-      user: req.user._id,
-      action: "CREATE_INDICATOR",
-      entity: indicatorTitle,
-      entityId: indicator._id,
-      level: "success",
-    });
-
     res.status(201).json({ success: true, indicator });
   },
 );
 
-
 /* =====================================================
-    SUBMIT EVIDENCE (MODIFIED FOR RESET ON REJECTION)
+ SUBMIT EVIDENCE
 ===================================================== */
+
 export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: any, res: Response, next: NextFunction) => {
+   
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    // 🟢 NEW: If previously rejected, clear old files from Cloudinary and DB
     if (indicator.status === STATUS.REJECTED) {
       for (const item of indicator.evidence) {
         if (item.publicId) {
           await cloudinary.uploader.destroy(item.publicId, {
-            resource_type: item.resourceType || "raw"
+            resource_type: item.resourceType || "raw",
           });
         }
       }
-      indicator.evidence = []; // Reset evidence array
+      indicator.evidence = [];
     }
 
-    const files = req.files?.files;
-    if (!files?.length) return next(new ErrorHandler(400, "No files uploaded"));
+    // Capture the files array
+    const files = req.files as Express.Multer.File[];
+    
+    // This is the line currently triggering your 400 error
+    if (!files || files.length === 0) {
+      console.error("Validation Failed: req.files is empty or undefined");
+      return next(new ErrorHandler(400, "No files uploaded"));
+    }
 
     const rawDescs = req.body.descriptions;
-    const descriptions: string[] = Array.isArray(rawDescs) ? rawDescs : [rawDescs || ""];
+    const descriptions: string[] = Array.isArray(rawDescs)
+      ? rawDescs
+      : [rawDescs || ""];
+
     const evidenceItems: IEvidence[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const desc = descriptions[i] || "Evidence submission";
 
-      // ... existing ZIP and single-file upload logic ...
-      // (Assuming your buildEvidence and uploadToCloudinary calls stay the same)
-      const upload = await uploadToCloudinary(file.buffer, "indicators/evidence", path.parse(file.originalname).name);
-      evidenceItems.push(buildEvidence(upload, file.originalname, file.size, file.mimetype, desc));
+      const upload = await uploadToCloudinary(
+        file.buffer,
+        "indicators/evidence",
+        path.parse(file.originalname).name
+      );
+
+      evidenceItems.push(
+        buildEvidence(
+          upload,
+          file.originalname,
+          file.size,
+          file.mimetype,
+          desc
+        )
+      );
     }
 
     indicator.evidence.push(...evidenceItems);
@@ -318,38 +314,53 @@ export const submitIndicatorEvidence = catchAsyncErrors(
     });
 
     res.json({ success: true, indicator });
-  },
+  }
 );
-
 /* =====================================================
-    REVIEW HANDLER (MODIFIED TO TRACK REJECTIONS)
+ REVIEW HANDLER (TWO-STAGE APPROVAL)
 ===================================================== */
+
 const reviewIndicator = async (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
-  status: StatusType,
+  action: "approve" | "reject",
 ) => {
   if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-  if (!hasRole(req.user.role, ["admin", "superadmin"]))
-    return next(new ErrorHandler(403, "Only administrators can review indicators"));
+
+  const userRole = req.user.role?.toLowerCase();
+  if (!hasRole(userRole, ["admin", "superadmin"]))
+    return next(
+      new ErrorHandler(403, "Only administrators can review indicators"),
+    );
 
   const indicator = await Indicator.findById(req.params.id);
   if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-  const { notes, reportData } = req.body;
+  const { notes, reportData } = req.body || {};
 
-  if (status === STATUS.REJECTED) {
-    if (!notes || notes.trim().length === 0) {
-      return next(new ErrorHandler(400, "Rejection requires a clear remark."));
-    }
-    // 🟢 NEW: Increment rejection count and reset progress
+  if (action === "reject") {
+    if (!notes || notes.trim().length === 0)
+      return next(new ErrorHandler(400, "Rejection requires a remark."));
+    indicator.status = STATUS.REJECTED;
     indicator.rejectionCount = (indicator.rejectionCount || 0) + 1;
     indicator.progress = 0;
     indicator.result = "fail";
+  } else if (action === "approve") {
+    // Stage 2: Superadmin Approval
+    if (userRole === "superadmin") {
+      indicator.status = STATUS.COMPLETED;
+      indicator.progress = 100;
+      indicator.result = "pass";
+    }
+    // Stage 1: Admin Approval
+    else {
+      indicator.status = STATUS.APPROVED;
+      indicator.progress = 100; // It is verified, but not "Complete" yet
+      indicator.result = "pass";
+    }
   }
 
-  indicator.status = status;
   indicator.reviewedBy = req.user._id;
   indicator.reviewedAt = new Date();
   if (reportData) indicator.reportData = reportData;
@@ -362,40 +373,56 @@ const reviewIndicator = async (
     });
   }
 
-  if (status === STATUS.APPROVED) {
-    indicator.progress = 100;
-    indicator.result = "pass";
+  await indicator.save();
+
+  emitIndicatorUpdateToAdmins({
+    indicatorId: indicator._id.toString(),
+    status: indicator.status,
+  });
+  if (indicator.assignedTo) {
+    emitIndicatorUpdateToUser(indicator.assignedTo.toString(), {
+      indicatorId: indicator._id.toString(),
+      status: indicator.status,
+    });
   }
 
-  await indicator.save();
-  
-  // ... rest of your existing socket and population logic ...
   res.status(200).json({ success: true, indicator });
 };
 
 export const approveIndicator = catchAsyncErrors(async (req, res, next) =>
-  reviewIndicator(req, res, next, STATUS.APPROVED),
+  reviewIndicator(req, res, next, "approve"),
 );
 export const rejectIndicator = catchAsyncErrors(async (req, res, next) =>
-  reviewIndicator(req, res, next, STATUS.REJECTED),
+  reviewIndicator(req, res, next, "reject"),
 );
 
 /* =====================================================
-    OTHER GETTERS & DELETE
+ OTHER GETTERS & DELETE
 ===================================================== */
+
 export const updateIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-    if (!hasRole(req.user.role, ["admin", "superadmin"]))
-      return next(new ErrorHandler(403, "Forbidden"));
+   // 1. Strict Role Verification
+if (!req.user || req.user.role !== "SuperAdmin") {
+  return next(new ErrorHandler(403, "Only Super Admins can modify registries"));
+}
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
     const { notes, ...otherData } = req.body;
-    Object.assign(indicator, otherData);
 
-    if (notes && typeof notes === "string") {
+    // 2. Security: Clean the incoming data
+    // Remove fields that shouldn't be manually updated or could break the DB
+    delete otherData._id;
+    delete otherData.createdAt;
+
+    // 3. Apply updates
+    // .set() is better than Object.assign for Mongoose as it handles casting
+    indicator.set(otherData);
+
+    // 4. Handle Notes specifically
+    if (notes && typeof notes === "string" && notes.trim() !== "") {
       indicator.notes.push({
         text: notes,
         createdBy: req.user._id,
@@ -405,47 +432,27 @@ export const updateIndicator = catchAsyncErrors(
 
     await indicator.save();
 
-    const payload = {
-      indicatorId: indicator._id.toString(),
-      status: indicator.status,
-    };
-    emitIndicatorUpdateToAdmins(payload);
-    if (indicator.assignedTo)
-      emitIndicatorUpdateToUser(indicator.assignedTo.toString(), payload);
-
-    res.json({ success: true, indicator });
+    res.status(200).json({ 
+      success: true, 
+      indicator 
+    });
   },
 );
 
 export const updateIndicatorProgress = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-    if (!hasRole(req.user.role, ["admin", "superadmin"]))
-      return next(
-        new ErrorHandler(403, "Only administrators can update progress."),
-      );
+    if (!req.user || !hasRole(req.user.role, ["admin", "superadmin"]))
+      return next(new ErrorHandler(403, "Forbidden"));
 
-    const { id } = req.params;
     const { progress } = req.body;
+    if (progress === undefined || progress < 0 || progress > 100)
+      return next(new ErrorHandler(400, "Value 0-100 required"));
 
-    if (progress === undefined || progress < 0 || progress > 100) {
-      return next(new ErrorHandler(400, "Provide a value between 0 and 100."));
-    }
-
-    const indicator = await Indicator.findById(id);
-    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+    const indicator = await Indicator.findById(req.params.id);
+    if (!indicator) return next(new ErrorHandler(404, "Not found"));
 
     indicator.progress = progress;
     await indicator.save();
-
-    const payload = {
-      indicatorId: indicator._id.toString(),
-      status: indicator.status,
-    };
-    emitIndicatorUpdateToAdmins(payload);
-    if (indicator.assignedTo)
-      emitIndicatorUpdateToUser(indicator.assignedTo.toString(), payload);
-
     res.status(200).json({ success: true, indicator });
   },
 );
@@ -476,8 +483,9 @@ export const getAllIndicators = catchAsyncErrors(async (req, res) => {
 });
 
 export const getSubmittedIndicators = catchAsyncErrors(async (req, res) => {
+  // We keep APPROVED in the list so the Superadmin can see items ready for final completion
   const indicators = await Indicator.find({
-    status: { $in: [STATUS.PENDING, STATUS.SUBMITTED, STATUS.APPROVED] },
+    status: { $in: [STATUS.SUBMITTED, STATUS.APPROVED, STATUS.PENDING] },
   })
     .populate("category level2Category", "title")
     .populate("createdBy reviewedBy", "name email")
@@ -486,10 +494,6 @@ export const getSubmittedIndicators = catchAsyncErrors(async (req, res) => {
   res.json({ success: true, indicators });
 });
 
-/* =====================================================
- USER INDICATORS
-===================================================== */
-
 export const getUserIndicators = catchAsyncErrors(async (req, res) => {
   const indicators = await Indicator.find({
     $or: [{ assignedTo: req.user?._id }, { assignedGroup: req.user?._id }],
@@ -497,6 +501,5 @@ export const getUserIndicators = catchAsyncErrors(async (req, res) => {
     .populate("category level2Category", "title")
     .sort({ dueDate: 1 })
     .lean();
-
   res.json({ success: true, indicators });
 });
