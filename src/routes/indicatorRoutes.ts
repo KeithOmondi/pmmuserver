@@ -48,7 +48,7 @@ router.post(
   isAuthenticated,
   // Use upload.array to target the "files" field specifically.
   // This handles the binary files and ignores the text "descriptions".
-  upload.array("files", 10), 
+  upload.array("files", 100), 
   submitIndicatorEvidence
 );
 

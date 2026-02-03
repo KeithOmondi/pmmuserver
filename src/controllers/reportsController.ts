@@ -84,7 +84,7 @@ const formatIndicatorsForHtml = (
   const dateLabel = new Date().toLocaleString("en-KE");
   // Official Placeholder for Judiciary Logo (Use a public URL to your hosted logo)
   const LOGO_URL =
-    "https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png";
+    "https://res.cloudinary.com/do0yflasl/image/upload/v1770035125/JOB_LOGO_qep9lj.jpg";
 
   const rows = indicators.map((i) => {
     let responsible = "Unassigned";

@@ -132,6 +132,12 @@ const staff = [
     pjNumber: "56459",
     email: "udotol@yahoo.co.uk",
   },
+
+  {
+    name: "Hon. Shimenga",
+    pjNumber: "57641",
+    email: "iberiam777@gmail.com",
+  },
 ];
 
 // Seeder function
