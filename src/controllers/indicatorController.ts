@@ -512,27 +512,29 @@ export const getEvidencePreviewUrl = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Indicator not found" });
     }
 
-    const evidence = indicator.evidence.find((e) => e.publicId === evidenceId);
+    const evidence = indicator.evidence.find(
+  (e) => e.publicId === req.params.publicId
+);
 
-    if (!evidence) {
-      return res.status(404).json({ message: "Evidence not found" });
-    }
+if (!evidence) {
+  return res.status(404).json({ message: "Evidence not found" });
+}
 
-    // 🔐 Generate signed URL
+
+    // 🔑 THIS is the critical part
     const signedUrl = cloudinary.url(evidence.publicId, {
-      resource_type: evidence.resourceType,
+      resource_type: evidence.resourceType, // image | raw | video
       type: "authenticated",
+      secure: true,
       sign_url: true,
-      expires_at: Math.floor(Date.now() / 1000) + 60 * 5, // 5 minutes
-      flags: "attachment:false", // inline preview
+      expires_at: Math.floor(Date.now() / 1000) + 60 * 5, // 5 mins
     });
 
     return res.json({ url: signedUrl });
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error("Preview URL error:", err);
     return res.status(403).json({
-      message:
-        "ACCESS DENIED, could not generate a secure access token for this file, please reload the page",
+      message: "ACCESS DENIED, could not generate a secure access token for this file",
     });
   }
 };
