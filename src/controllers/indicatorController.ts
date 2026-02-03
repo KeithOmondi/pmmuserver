@@ -123,17 +123,6 @@ const buildEvidence = (
   mimeType: string,
   description = "",
 ): IEvidence => {
-  const signedUrl = cloudinary.utils.private_download_url(
-    upload.public_id,
-    upload.format,
-    {
-      resource_type: upload.resource_type,
-      type: "authenticated",
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      attachment: false,
-    },
-  );
-
   return {
     type: "file",
     fileName,
@@ -147,19 +136,22 @@ const buildEvidence = (
         : "raw",
     cloudinaryType: "authenticated",
     format: upload.format || "bin",
-    previewUrl: signedUrl,
   };
 };
 
 /* =====================================================
- CREATE INDICATOR
+   CREATE INDICATOR
 ===================================================== */
 
 export const createIndicator = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.user) throw new ErrorHandler(401, "Unauthorized");
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction, // <-- add this
+  ) => {
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
     if (!hasRole(req.user.role, ["superadmin"]))
-      throw new ErrorHandler(403, "Forbidden");
+      return next(new ErrorHandler(403, "Forbidden"));
 
     if (req.body.assignedTo === "") delete req.body.assignedTo;
     if (!Array.isArray(req.body.assignedGroup)) req.body.assignedGroup = [];
@@ -169,7 +161,7 @@ export const createIndicator = catchAsyncErrors(
     const { error, value } = createIndicatorSchema.validate(req.body, {
       stripUnknown: true,
     });
-    if (error) throw new ErrorHandler(400, error.message);
+    if (error) return next(new ErrorHandler(400, error.message));
 
     const {
       categoryId,
@@ -240,6 +232,7 @@ export const createIndicator = catchAsyncErrors(
       indicatorId: indicator._id.toString(),
       status: indicator.status,
     });
+
     res.status(201).json({ success: true, indicator });
   },
 );
@@ -250,12 +243,12 @@ export const createIndicator = catchAsyncErrors(
 
 export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: any, res: Response, next: NextFunction) => {
-   
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
+    // Clear previous evidence if rejected
     if (indicator.status === STATUS.REJECTED) {
       for (const item of indicator.evidence) {
         if (item.publicId) {
@@ -267,10 +260,8 @@ export const submitIndicatorEvidence = catchAsyncErrors(
       indicator.evidence = [];
     }
 
-    // Capture the files array
+    // req.files comes from multer
     const files = req.files as Express.Multer.File[];
-    
-    // This is the line currently triggering your 400 error
     if (!files || files.length === 0) {
       console.error("Validation Failed: req.files is empty or undefined");
       return next(new ErrorHandler(400, "No files uploaded"));
@@ -287,10 +278,11 @@ export const submitIndicatorEvidence = catchAsyncErrors(
       const file = files[i];
       const desc = descriptions[i] || "Evidence submission";
 
+      // upload.buffer is available only with memoryStorage
       const upload = await uploadToCloudinary(
         file.buffer,
         "indicators/evidence",
-        path.parse(file.originalname).name
+        path.parse(file.originalname).name,
       );
 
       evidenceItems.push(
@@ -299,8 +291,8 @@ export const submitIndicatorEvidence = catchAsyncErrors(
           file.originalname,
           file.size,
           file.mimetype,
-          desc
-        )
+          desc,
+        ),
       );
     }
 
@@ -314,8 +306,9 @@ export const submitIndicatorEvidence = catchAsyncErrors(
     });
 
     res.json({ success: true, indicator });
-  }
+  },
 );
+
 /* =====================================================
  REVIEW HANDLER (TWO-STAGE APPROVAL)
 ===================================================== */
@@ -402,10 +395,12 @@ export const rejectIndicator = catchAsyncErrors(async (req, res, next) =>
 
 export const updateIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-   // 1. Strict Role Verification
-if (!req.user || req.user.role !== "SuperAdmin") {
-  return next(new ErrorHandler(403, "Only Super Admins can modify registries"));
-}
+    // 1. Strict Role Verification
+    if (!req.user || req.user.role !== "SuperAdmin") {
+      return next(
+        new ErrorHandler(403, "Only Super Admins can modify registries"),
+      );
+    }
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
@@ -432,9 +427,9 @@ if (!req.user || req.user.role !== "SuperAdmin") {
 
     await indicator.save();
 
-    res.status(200).json({ 
-      success: true, 
-      indicator 
+    res.status(200).json({
+      success: true,
+      indicator,
     });
   },
 );
@@ -503,3 +498,41 @@ export const getUserIndicators = catchAsyncErrors(async (req, res) => {
     .lean();
   res.json({ success: true, indicators });
 });
+
+/* =====================================================
+    GET SIGNED PREVIEW URL
+===================================================== */
+
+export const getEvidencePreviewUrl = async (req: Request, res: Response) => {
+  try {
+    const { indicatorId, evidenceId } = req.params;
+
+    const indicator = await Indicator.findById(indicatorId);
+    if (!indicator) {
+      return res.status(404).json({ message: "Indicator not found" });
+    }
+
+    const evidence = indicator.evidence.find((e) => e.publicId === evidenceId);
+
+    if (!evidence) {
+      return res.status(404).json({ message: "Evidence not found" });
+    }
+
+    // 🔐 Generate signed URL
+    const signedUrl = cloudinary.url(evidence.publicId, {
+      resource_type: evidence.resourceType,
+      type: "authenticated",
+      sign_url: true,
+      expires_at: Math.floor(Date.now() / 1000) + 60 * 5, // 5 minutes
+      flags: "attachment:false", // inline preview
+    });
+
+    return res.json({ url: signedUrl });
+  } catch (error) {
+    console.error(error);
+    return res.status(403).json({
+      message:
+        "ACCESS DENIED, could not generate a secure access token for this file, please reload the page",
+    });
+  }
+};

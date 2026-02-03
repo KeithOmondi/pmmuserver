@@ -11,6 +11,7 @@ import {
   getAllIndicators,
   getSubmittedIndicators,
   updateIndicatorProgress,
+  getEvidencePreviewUrl,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -37,9 +38,7 @@ router.put(
   updateIndicator
 );
 
-/* ================================================
-   USER: SUBMIT EVIDENCE (multiple files)
-================================================ */
+
 /* ================================================
    USER: SUBMIT EVIDENCE (multiple files)
 ================================================ */
@@ -106,6 +105,18 @@ router.patch(
   isAuthenticated,
   isAuthorized("admin", "superadmin"), 
   updateIndicatorProgress
+);
+
+/* =====================================================
+   GET SIGNED EVIDENCE PREVIEW URL
+   Route: /api/indicators/:indicatorId/evidence/:evidenceId/preview
+   Method: GET
+   Auth: Required
+===================================================== */
+router.get(
+  "/:indicatorId/evidence/:evidenceId/preview",
+  isAuthenticated, // ensures req.user exists
+  getEvidencePreviewUrl
 );
 
 export default router;

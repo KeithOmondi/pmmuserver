@@ -23,8 +23,7 @@ export interface IEvidence {
   resourceType: "raw" | "image" | "video";
   cloudinaryType: "authenticated" | "upload";
   format: string;
-
-  previewUrl: string;
+  // ❌ previewUrl removed; generated dynamically instead
 }
 
 export interface INote {
@@ -96,7 +95,7 @@ const evidenceSchema = new Schema<IEvidence>(
     },
 
     format: { type: String, required: true },
-    previewUrl: { type: String, required: true },
+    // previewUrl removed
   },
   { _id: false },
 );
