@@ -23,7 +23,8 @@ export interface IEvidence {
   resourceType: "raw" | "image" | "video";
   cloudinaryType: "authenticated" | "upload";
   format: string;
-  // ❌ previewUrl removed; generated dynamically instead
+
+  version: number; // ✅ Added Cloudinary version per file
 }
 
 export interface INote {
@@ -95,7 +96,8 @@ const evidenceSchema = new Schema<IEvidence>(
     },
 
     format: { type: String, required: true },
-    // previewUrl removed
+
+    version: { type: Number, required: false }, // ✅ version added here
   },
   { _id: false },
 );
@@ -186,7 +188,7 @@ const indicatorSchema = new Schema<IIndicator>(
 );
 
 /* =====================================================
-   ASSIGNMENT VALIDATOR (NO next(), NO middleware)
+   ASSIGNMENT VALIDATOR
 ===================================================== */
 
 indicatorSchema.path("assignedGroup").validate(function () {

@@ -1,10 +1,10 @@
-import { Types } from "mongoose";
-import { IUser } from "../models/User";
+import { UserDocument } from "../models/User"; // Import the hydrated document type
 
 declare global {
   namespace Express {
     interface Request {
-      user?: Partial<IUser> & { _id: Types.ObjectId; role: "SuperAdmin" | "Admin" | "User" | string };
+      // Use the Document type here so .save() and .tokenVersion are recognized
+      user?: UserDocument; 
       files?: Express.Multer.File[];
     }
   }

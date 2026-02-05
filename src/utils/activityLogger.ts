@@ -83,3 +83,23 @@ export const logActivity = async ({
     console.error("❌ Logger Error:", error);
   }
 };
+
+const sanitizeMeta = (meta?: Record<string, any>) => {
+  if (!meta) return undefined;
+
+  const safeMeta: Record<string, any> = {};
+
+  for (const [key, value] of Object.entries(meta)) {
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null
+    ) {
+      safeMeta[key] = value;
+    }
+  }
+
+  return safeMeta;
+};
+

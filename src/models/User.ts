@@ -17,6 +17,10 @@ export interface IUser {
   accountVerified: boolean;
   accountLocked: boolean;
 
+  /* Security Tracking */
+  // Incremented on logout to invalidate old tokens
+  tokenVersion: number;
+
   /* Activity tracking */
   lastActivityAt?: Date;
 
@@ -95,24 +99,22 @@ const userSchema = new Schema<
       default: false,
     },
 
-    /**
-     * 🔒 Locked by default
-     */
     accountLocked: {
       type: Boolean,
       default: true,
     },
 
-    /**
-     * Used for inactivity lock
-     */
+    // Initialize tokenVersion at 0
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      required: true,
+    },
+
     lastActivityAt: {
       type: Date,
     },
 
-    /**
-     * OTP (hashed)
-     */
     loginOtp: {
       type: String,
       select: false,
@@ -140,38 +142,25 @@ const userSchema = new Schema<
   {
     timestamps: true,
     versionKey: false,
-  }
+  },
 );
 
 /* =========================
    METHODS
 ========================= */
 
-/**
- * Generates OTP via shared utility
- * Stores hashed OTP & expiry
- * Returns plain OTP for delivery
- */
 userSchema.methods.generateLoginOtp = function (): string {
   const { otp, hashedOtp, expiresAt } = generateOTP();
-
   this.loginOtp = hashedOtp;
   this.loginOtpExpiry = expiresAt;
-
   return otp;
 };
 
-/**
- * Clears OTP after verification
- */
 userSchema.methods.clearLoginOtp = function (): void {
   this.loginOtp = undefined;
   this.loginOtpExpiry = undefined;
 };
 
-/**
- * OTP expiration check
- */
 userSchema.methods.isOtpExpired = function (): boolean {
   if (!this.loginOtpExpiry) return true;
   return this.loginOtpExpiry.getTime() < Date.now();
@@ -181,7 +170,8 @@ userSchema.methods.isOtpExpired = function (): boolean {
    MODEL
 ========================= */
 
+// Updated to use UserDocument for better type support during queries
 export const User = mongoose.model<IUser, Model<IUser, {}, IUserMethods>>(
   "User",
-  userSchema
+  userSchema,
 );

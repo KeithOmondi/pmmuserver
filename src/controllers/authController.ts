@@ -151,17 +151,30 @@ export const resendLoginOtp = asyncHandler(async (req: Request, res: Response) =
 });
 
 /* =====================================================
-   LOGOUT
+   LOGOUT (Invalidates all current sessions)
 ===================================================== */
-export const logout = asyncHandler(async (req: any, res: Response) => {
+export const logout = asyncHandler(async (req: Request, res: Response) => {
   if (req.user) {
-    req.user.tokenVersion += 1;
+    // Now TypeScript knows .tokenVersion and .save() exist
+    req.user.tokenVersion = (req.user.tokenVersion || 0) + 1;
     await req.user.save();
-    await logActivity({ user: req.user._id, userName: req.user.name, action: "USER_LOGOUT", level: "info" });
+
+    await logActivity({
+      user: req.user._id,
+      userName: req.user.name,
+      action: "USER_LOGOUT",
+      level: "info",
+    });
   }
 
-  res.clearCookie("refreshToken", { httpOnly: true, secure: env.NODE_ENV === "production", sameSite: env.NODE_ENV === "production" ? "none" : "lax", path: "/" })
-     .status(200).json({ success: true, message: "Logged out successfully" });
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/",
+  })
+  .status(200)
+  .json({ success: true, message: "Logged out successfully" });
 });
 
 /* =====================================================
@@ -172,12 +185,22 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
   if (!refreshToken) return res.status(401).json({ message: "Not authenticated" });
 
   let payload: any;
-  try { payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET!); }
-  catch { return res.status(401).json({ message: "Invalid refresh token" }); }
+  try {
+    payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET!);
+  } catch {
+    return res.status(401).json({ message: "Invalid refresh token" });
+  }
 
   const user = await User.findById(payload.id);
   if (!user) return res.status(401).json({ message: "User not found" });
-  if (user.accountLocked) return res.status(401).json({ message: "Session expired due to inactivity" });
+  
+  // Security Check: Does the refresh token version match the DB?
+  if (user.tokenVersion !== payload.tokenVersion) {
+    return res.status(401).json({ message: "Session invalidated. Please login again." });
+  }
 
+  if (user.accountLocked) return res.status(401).json({ message: "Account locked" });
+
+  // sendToken will issue new Access and Refresh tokens with the current tokenVersion
   sendToken({ user, statusCode: 200, message: "Token refreshed", res });
 });

@@ -16,16 +16,23 @@ export const sendToken = ({
   message,
   res,
 }: SendTokenOptions): void => {
+  
+  // Create payload including the tokenVersion
+  const payload = { 
+    id: user._id.toString(),
+    tokenVersion: user.tokenVersion // Essential for the security check
+  };
+
   // Access token (SHORT LIVED)
   const accessToken = jwt.sign(
-    { id: user._id.toString() },
+    payload,
     env.JWT_SECRET!,
     { expiresIn: "15m" }
   );
 
   // Refresh token (LONG LIVED)
   const refreshToken = jwt.sign(
-    { id: user._id.toString() },
+    payload,
     env.JWT_REFRESH_SECRET!,
     { expiresIn: "7d" }
   );
@@ -39,8 +46,6 @@ export const sendToken = ({
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
-  // src/utils/sendToken.ts
-
   res.status(statusCode).json({
     success: true,
     message,
@@ -52,7 +57,6 @@ export const sendToken = ({
       pjNumber: user.pjNumber,
       role: user.role,
       accountVerified: user.accountVerified,
-      // FIX: Return only the URL string to match the updateProfile response
       avatar: user.avatar?.url || "", 
     },
   });

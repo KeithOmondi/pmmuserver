@@ -113,9 +113,10 @@ router.patch(
    Method: GET
    Auth: Required
 ===================================================== */
+
 router.get(
-  "/:indicatorId/evidence/:evidenceId/preview",
-  isAuthenticated, // ensures req.user exists
+  "/:indicatorId/preview-evidence",
+  isAuthenticated,
   getEvidencePreviewUrl
 );
 

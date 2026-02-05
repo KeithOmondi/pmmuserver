@@ -122,9 +122,9 @@ const staff = [
   },
 
   {
-    name: "Emili Masawa",
+    name: "Emily Masawa",
     pjNumber: "47688",
-    email: "emilymasawa1@gmail.com",
+    email: "emily.masawa@court.go.ke",
   },
 
    {
@@ -140,7 +140,8 @@ const staff = [
   },
 ];
 
-// Seeder function
+// ... existing imports
+
 const seedUsers = async () => {
   try {
     if (!env.MONGO_URI) throw new Error("❌ MONGO_URI is missing");
@@ -151,15 +152,12 @@ const seedUsers = async () => {
     for (let i = 0; i < staff.length; i++) {
       const s = staff[i];
 
-      // Determine role using TitleCase to match schema
       let role: "SuperAdmin" | "Admin" | "User" = "User";
       if (i === 0) role = "SuperAdmin";
       else if (i === 1) role = "Admin";
 
-      // Hash password using pjNumber
       const hashedPassword = await bcrypt.hash(s.pjNumber, 10);
 
-      // Upsert user safely (check by email OR pjNumber)
       await User.updateOne(
         { $or: [{ email: s.email.toLowerCase() }, { pjNumber: s.pjNumber }] },
         {
@@ -169,15 +167,29 @@ const seedUsers = async () => {
             pjNumber: s.pjNumber,
             password: hashedPassword,
             role,
+            tokenVersion: 0, // Set for new users
+            accountLocked: true, // Matching your schema default
           },
+          // Optional: If you want to ensure existing users get the field
+          $set: { lastActivityAt: new Date() } 
         },
         { upsert: true }
       );
 
-      console.log(`Seeded: ${s.name} (${role})`);
+      console.log(`Processed: ${s.name} (${role})`);
     }
 
-    console.log("✅ All users seeded successfully");
+    // IMPORTANT: Migration for existing users who might lack the field
+    const migrationResult = await User.updateMany(
+      { tokenVersion: { $exists: false } },
+      { $set: { tokenVersion: 0 } }
+    );
+    
+    if (migrationResult.modifiedCount > 0) {
+      console.log(`🛠️ Migrated ${migrationResult.modifiedCount} existing users to tokenVersion: 0`);
+    }
+
+    console.log("✅ All users seeded and synchronized successfully");
     process.exit(0);
   } catch (err) {
     console.error("Seeder error:", err);
