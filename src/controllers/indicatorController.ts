@@ -137,8 +137,8 @@ const buildEvidence = (
     // EXACT Cloudinary values — no guessing
     publicId: upload.public_id,
     resourceType: upload.resource_type, // 👈 image for PDFs
-    cloudinaryType: upload.type,         // authenticated
-    format: upload.format,               // pdf
+    cloudinaryType: upload.type, // authenticated
+    format: upload.format, // pdf
     version: upload.version,
 
     status: "active",
@@ -148,8 +148,6 @@ const buildEvidence = (
     uploadedAt: new Date(),
   };
 };
-
-
 
 /* =====================================================
  CREATE INDICATOR
@@ -272,7 +270,9 @@ export const submitIndicatorEvidence = catchAsyncErrors(
     // LOG 1: Check if files are reaching Multer
     console.log(`Files Received: ${files?.length || 0}`);
     if (files) {
-      files.forEach((f, i) => console.log(`File [${i}]: ${f.originalname} (${f.size} bytes)`));
+      files.forEach((f, i) =>
+        console.log(`File [${i}]: ${f.originalname} (${f.size} bytes)`),
+      );
     }
 
     if (!files || files.length === 0) {
@@ -295,7 +295,7 @@ export const submitIndicatorEvidence = catchAsyncErrors(
       const desc = descriptions[i] || "Evidence submission";
 
       console.log(`Uploading file ${i + 1}/${files.length} to Cloudinary...`);
-      
+
       const upload = await uploadToCloudinary(
         file.buffer,
         indicator._id.toString(),
@@ -315,9 +315,11 @@ export const submitIndicatorEvidence = catchAsyncErrors(
 
     indicator.evidence.push(...evidenceItems);
     indicator.status = STATUS.SUBMITTED;
-    
+
     // LOG 3: Confirm before saving
-    console.log(`Final evidence count to be saved: ${indicator.evidence.length}`);
+    console.log(
+      `Final evidence count to be saved: ${indicator.evidence.length}`,
+    );
     await indicator.save();
 
     console.log("Database updated successfully. Sending response.");
@@ -341,16 +343,20 @@ const reviewIndicator = async (
 
     const userRole = req.user.role?.toLowerCase();
     if (!hasRole(userRole, ["admin", "superadmin"]))
-      return next(new ErrorHandler(403, "Only administrators can review indicators"));
+      return next(
+        new ErrorHandler(403, "Only administrators can review indicators"),
+      );
 
-    const indicator = await Indicator.findById(req.params.id).populate("assignedTo");
+    const indicator = await Indicator.findById(req.params.id).populate(
+      "assignedTo",
+    );
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
     const { notes, reportData } = req.body || {};
 
     // Generate the specific deep link for this indicator
     const specificIndicatorUrl = `${process.env.FRONTEND_URL}/user/indicators/${indicator._id}`;
-    
+
     // Safety check for the recipient email
     const recipientEmail = (indicator.assignedTo as any)?.email;
 
@@ -389,7 +395,8 @@ const reviewIndicator = async (
 
     // --------- APPROVAL ---------
     if (action === "approve") {
-      indicator.status = userRole === "superadmin" ? STATUS.COMPLETED : STATUS.APPROVED;
+      indicator.status =
+        userRole === "superadmin" ? STATUS.COMPLETED : STATUS.APPROVED;
       indicator.progress = 100;
       indicator.result = "pass";
 
@@ -526,14 +533,19 @@ export const deleteIndicator = catchAsyncErrors(
         indicator.evidence.map(async (item) => {
           try {
             // Validate resource type
-            const resourceType = ["auto", "image", "video"].includes(item.resourceType)
+            const resourceType = ["auto", "image", "video"].includes(
+              item.resourceType,
+            )
               ? (item.resourceType as "auto" | "image" | "video")
               : "auto";
             await deleteFromCloudinary(item.publicId, resourceType);
           } catch (err) {
-            console.error(`Failed to delete Cloudinary file ${item.publicId}:`, err);
+            console.error(
+              `Failed to delete Cloudinary file ${item.publicId}:`,
+              err,
+            );
           }
-        })
+        }),
       );
     }
 
@@ -554,7 +566,7 @@ export const deleteIndicator = catchAsyncErrors(
       success: true,
       message: "Indicator and associated files deleted",
     });
-  }
+  },
 );
 
 /* =====================================================
@@ -650,16 +662,20 @@ export const proxyEvidenceStream = catchAsyncErrors(
     try {
       const hasExtension = publicId.toLowerCase().endsWith(".pdf");
       const resourceType = hasExtension ? "raw" : "image";
-      
-      // Even if the Cloudinary ID lacks .pdf, we want the signed URL 
-      // to treat the format as pdf so the stream is valid.
-      const format = "pdf"; 
 
-      const signedUrl = cloudinary.utils.private_download_url(publicId, format, {
-        resource_type: resourceType,
-        type: "authenticated",
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-      });
+      // Even if the Cloudinary ID lacks .pdf, we want the signed URL
+      // to treat the format as pdf so the stream is valid.
+      const format = "pdf";
+
+      const signedUrl = cloudinary.utils.private_download_url(
+        publicId,
+        format,
+        {
+          resource_type: resourceType,
+          type: "authenticated",
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        },
+      );
 
       const response = await axios({
         method: "get",
@@ -668,29 +684,28 @@ export const proxyEvidenceStream = catchAsyncErrors(
       });
 
       // --- HEADER UPDATES ---
-      
+
       // 1. Set the content as PDF so the browser opens its viewer
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", "inline");
 
       // 2. FIX: Allow the frontend (5173) to frame the backend (8000)
       // We must remove SAMEORIGIN because the ports differ
-      res.removeHeader("X-Frame-Options"); 
-      
+      res.removeHeader("X-Frame-Options");
+
       // 3. Define who is allowed to embed this stream
       // 'self' refers to 8000, localhost:5173 is your React app
       res.setHeader(
-        "Content-Security-Policy", 
-        "frame-ancestors 'self' http://localhost:5173"
+        "Content-Security-Policy",
+        `frame-ancestors 'self' ${env.FRONTEND_URL}`,
       );
 
       response.data.pipe(res);
-
     } catch (err: any) {
       console.error("[PROXY ERROR]:", err.response?.data || err.message);
       return next(new ErrorHandler(500, "Failed to stream document"));
     }
-  }
+  },
 );
 
 /* =====================================================
@@ -744,17 +759,21 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
 
     const isAssignedUser = String(indicator.assignedTo) === String(user._id);
     const isAssignedGroup = (indicator.assignedGroup ?? []).some(
-      (id) => String(id) === String(user._id)
+      (id) => String(id) === String(user._id),
     );
     const isSuperAdmin = user.role?.toLowerCase() === "superadmin";
 
     if (!isAssignedUser && !isAssignedGroup && !isSuperAdmin) {
-      return next(new ErrorHandler(403, "You are not assigned to this indicator"));
+      return next(
+        new ErrorHandler(403, "You are not assigned to this indicator"),
+      );
     }
 
     // 2️⃣ STATUS VALIDATION
     if (indicator.status !== STATUS.REJECTED) {
-      return next(new ErrorHandler(400, "Only rejected indicators can be resubmitted"));
+      return next(
+        new ErrorHandler(400, "Only rejected indicators can be resubmitted"),
+      );
     }
 
     // 3️⃣ FILE VALIDATION
@@ -778,21 +797,31 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
 
     // 6️⃣ PROCESS NEW FILES
     const rawDescs = req.body.descriptions;
-    const descriptions: string[] = Array.isArray(rawDescs) ? rawDescs : [rawDescs || ""];
+    const descriptions: string[] = Array.isArray(rawDescs)
+      ? rawDescs
+      : [rawDescs || ""];
 
     const newEvidence: IEvidence[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const desc = descriptions[i] || `Resubmission Evidence (Attempt ${attempt})`;
+      const desc =
+        descriptions[i] || `Resubmission Evidence (Attempt ${attempt})`;
 
       const upload = await uploadToCloudinary(
         file.buffer,
         indicator._id.toString(),
-        file.originalname
+        file.originalname,
       );
 
       newEvidence.push(
-        buildEvidence(upload, file.originalname, file.size, file.mimetype, desc, attempt)
+        buildEvidence(
+          upload,
+          file.originalname,
+          file.size,
+          file.mimetype,
+          desc,
+          attempt,
+        ),
       );
     }
 
@@ -834,7 +863,7 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
       message: "Evidence resubmitted successfully",
       indicator,
     });
-  }
+  },
 );
 
 /**
@@ -853,7 +882,9 @@ export const submitIndicatorScore = catchAsyncErrors(
     }
 
     if (typeof score !== "number" || score < 0 || score > 100) {
-      return next(new ErrorHandler(400, "Score must be a number between 0 and 100"));
+      return next(
+        new ErrorHandler(400, "Score must be a number between 0 and 100"),
+      );
     }
 
     // 1. Fetch the indicator
@@ -896,8 +927,5 @@ export const submitIndicatorScore = catchAsyncErrors(
           : "Indicator partially completed. SuperAdmin should set a new deadline.",
       indicator,
     });
-  }
+  },
 );
-
-
-
