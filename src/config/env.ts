@@ -1,71 +1,51 @@
 import { config } from "dotenv";
 import { z } from "zod";
+import type { StringValue } from "ms";
 
-// Load .env file
+// Load .env
 config();
 
-/* =========================
-   ENV SCHEMA
-========================= */
+// --------------------
+// Zod Schema
+// --------------------
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.string().default("8000"),
 
-  /* =========================
-     DATABASE
-  ========================= */
+  // Database
   MONGO_URI: z.string().nonempty("MONGO_URI is required"),
   DATABASE_NAME: z.string().optional(),
 
-  /* =========================
-     JWT CONFIG
-  ========================= */
+  // JWT
   JWT_SECRET: z.string().nonempty("JWT_SECRET is required"),
   JWT_REFRESH_SECRET: z.string().nonempty("JWT_REFRESH_SECRET is required"),
+  JWT_EXPIRES_IN: z.custom<StringValue>().default("15m"),
+  JWT_REFRESH_EXPIRES_IN: z.custom<StringValue>().default("7d"),
 
-  // Access token lifetime
-  JWT_EXPIRES_IN: z.enum(["5m", "15m", "30m", "1h", "1d"]).default("15m"),
+  // Frontend
+  FRONTEND_URL: z.string().url(),
 
-  // Refresh token lifetime
-  JWT_REFRESH_EXPIRES_IN: z.enum(["1d", "7d", "30d"]).default("7d"),
-
-  /* =========================
-     CLIENT
-  ========================= */
-  FRONTEND_URL: z.string().url("FRONTEND_URL must be a valid URL"),
-
-  /* =========================
-     COOKIES / DEBUG
-  ========================= */
-  COOKIE_EXPIRE: z.string().default("7"), // days
+  // Cookies / Debug
+  COOKIE_EXPIRE: z.string().default("7"),
   DEBUG_AUTH: z.enum(["true", "false"]).default("false"),
 
-  /* =========================
-     CLOUDINARY
-  ========================= */
+  // Cloudinary
   CLOUDINARY_CLOUD_NAME: z.string().nonempty(),
   CLOUDINARY_API_KEY: z.string().nonempty(),
   CLOUDINARY_API_SECRET: z.string().nonempty(),
 
-  /* =========================
-     CACHE
-  ========================= */
+  // Cache
   REDIS_URL: z.string().nonempty(),
 
-  /* =========================
-     EMAIL (BREVO)
-  ========================= */
-  BREVO_API_KEY: z.string().nonempty("BREVO_API_KEY is required"),
+  // Email
+  BREVO_API_KEY: z.string().nonempty(),
   MAIL_FROM_NAME: z.string().default("ORHC"),
-  MAIL_FROM_EMAIL: z
-    .string()
-    .email("MAIL_FROM_EMAIL must be a valid email")
-    .default("onboarding@yourdomain.com"), // Replace with your preferred sender email
+  MAIL_FROM_EMAIL: z.string().email().default("onboarding@yourdomain.com"),
 });
 
-/* =========================
-   VALIDATION
-========================= */
+// --------------------
+// Validate env
+// --------------------
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
@@ -76,9 +56,9 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-/* =========================
-   EXPORT (NORMALIZED)
-========================= */
+// --------------------
+// Export normalized env
+// --------------------
 export const env = {
   NODE_ENV: parsed.data.NODE_ENV,
   PORT: Number(parsed.data.PORT),
@@ -88,7 +68,6 @@ export const env = {
 
   JWT_SECRET: parsed.data.JWT_SECRET,
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET,
-
   JWT_EXPIRE: parsed.data.JWT_EXPIRES_IN,
   JWT_REFRESH_EXPIRE: parsed.data.JWT_REFRESH_EXPIRES_IN,
 
@@ -103,9 +82,6 @@ export const env = {
 
   REDIS_URL: parsed.data.REDIS_URL,
 
-  /* =========================
-     EMAIL (BREVO)
-  ========================= */
   BREVO_API_KEY: parsed.data.BREVO_API_KEY,
   MAIL_FROM_NAME: parsed.data.MAIL_FROM_NAME,
   MAIL_FROM_EMAIL: parsed.data.MAIL_FROM_EMAIL,

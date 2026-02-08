@@ -11,6 +11,7 @@ const COLORS = {
   TEXT: "#333333",
   SLATE: "#64748b",
   DANGER: "#be123c",  // Rejection Red
+  SUCCESS: "#06402B"
 };
 
 interface BaseMailTemplate {
@@ -127,6 +128,40 @@ export const indicatorRejectedTemplate = ({
       </div>
     `,
     text: `REVISION REQUIRED: ${indicatorTitle}. Notes: ${rejectionNotes}. Access: ${appUrl}`,
+  };
+};
+
+
+export interface IndicatorApprovedParams {
+  indicatorTitle: string;
+  appUrl: string;
+}
+
+
+export const indicatorApprovedTemplate = ({
+  indicatorTitle,
+  appUrl,
+}: IndicatorApprovedParams): BaseMailTemplate => {
+  return {
+    subject: `[SUCCESS] Indicator Approved: ${indicatorTitle}`,
+    html: `
+      <div style="background-color: ${COLORS.BG}; padding: 40px 20px; font-family: sans-serif;">
+        <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; border: 1px solid #e5e7eb;">
+          <div style="background-color: ${COLORS.SUCCESS}; padding: 30px; text-align: center;">
+            <h2 style="color: white; margin: 0;">Indicator Approved</h2>
+          </div>
+          <div style="padding: 40px; color: ${COLORS.TEXT};">
+            <p>Good news! Your submission for <strong>${indicatorTitle}</strong> has been reviewed and approved.</p>
+            <div style="text-align: center; margin-top: 30px;">
+              <a href="${appUrl}" style="background-color: ${COLORS.PRIMARY}; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                VIEW INDICATOR
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    text: `SUCCESS: Your submission for "${indicatorTitle}" has been approved. Access it here: ${appUrl}`,
   };
 };
 

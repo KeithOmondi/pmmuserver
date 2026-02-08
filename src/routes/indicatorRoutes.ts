@@ -11,7 +11,10 @@ import {
   getAllIndicators,
   getSubmittedIndicators,
   updateIndicatorProgress,
-  getEvidencePreviewUrl,
+  adminSubmitIndicatorEvidence,
+  proxyEvidenceStream,
+  resubmitIndicatorEvidence,
+  submitIndicatorScore,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -25,7 +28,7 @@ router.post(
   "/create",
   isAuthenticated,
   isAuthorized("superadmin"), // matches your controller role
-  createIndicator
+  createIndicator,
 );
 
 /* ================================================
@@ -35,9 +38,8 @@ router.put(
   "/update/:id",
   isAuthenticated,
   isAuthorized("superadmin"),
-  updateIndicator
+  updateIndicator,
 );
-
 
 /* ================================================
    USER: SUBMIT EVIDENCE (multiple files)
@@ -47,11 +49,16 @@ router.post(
   isAuthenticated,
   // Use upload.array to target the "files" field specifically.
   // This handles the binary files and ignores the text "descriptions".
-  upload.array("files", 100), 
-  submitIndicatorEvidence
+  upload.array("files", 100),
+  submitIndicatorEvidence,
 );
 
-router.get("/submitted", isAuthenticated, isAuthorized("superadmin", "admin"), getSubmittedIndicators);
+router.get(
+  "/submitted",
+  isAuthenticated,
+  isAuthorized("superadmin", "admin"),
+  getSubmittedIndicators,
+);
 
 /* ================================================
    USER: GET MY ASSIGNED INDICATORS
@@ -70,7 +77,7 @@ router.get(
   "/all",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  getAllIndicators
+  getAllIndicators,
 );
 
 /* ================================================
@@ -80,7 +87,7 @@ router.delete(
   "/delete/:id",
   isAuthenticated,
   isAuthorized("superadmin"),
-  deleteIndicator
+  deleteIndicator,
 );
 
 /* ================================================
@@ -90,34 +97,63 @@ router.put(
   "/approve/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  approveIndicator
+  approveIndicator,
 );
 
 router.put(
   "/reject/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  rejectIndicator
+  rejectIndicator,
 );
 
 router.patch(
   "/:id/progress",
   isAuthenticated,
-  isAuthorized("admin", "superadmin"), 
-  updateIndicatorProgress
+  isAuthorized("admin", "superadmin"),
+  updateIndicatorProgress,
 );
 
-/* =====================================================
-   GET SIGNED EVIDENCE PREVIEW URL
-   Route: /api/indicators/:indicatorId/evidence/:evidenceId/preview
-   Method: GET
-   Auth: Required
-===================================================== */
 
-router.get(
-  "/:indicatorId/preview-evidence",
+/**
+ * @route   POST /api/v1/indicators/:id/admin-submit
+ * @desc    Admin uploads evidence and auto-approves an indicator
+ * @access  Private (Admin, SuperAdmin)
+ */
+router.post(
+  "/:id/admin-submit",
   isAuthenticated,
-  getEvidencePreviewUrl
+  isAuthorized("admin", "superadmin"),
+  upload.array("files", 10), // Limit to 10 files per request
+  adminSubmitIndicatorEvidence,
+);
+
+/* ================================================
+   PROXY: STREAM EVIDENCE (AUTHENTICATED)
+   Used for previewing PDFs & images
+================================================ */
+router.get(
+  "/:indicatorId/proxy-evidence",
+  isAuthenticated,
+  proxyEvidenceStream
+);
+
+
+
+//RESUBMISSION ROUTE
+
+router.post(
+  "/resubmit/:id",
+  isAuthenticated,
+  upload.array("files", 100), 
+  resubmitIndicatorEvidence
+);
+
+router.post(
+  "/submit-score/:id",
+  isAuthenticated,
+  isAuthorized("admin", "superadmin"),
+  submitIndicatorScore
 );
 
 export default router;

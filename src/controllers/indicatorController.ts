@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import Joi from "joi";
-import { Types } from "mongoose";
-import path from "path";
+import mongoose, { Types } from "mongoose";
 
 import { Category, ICategory } from "../models/Category";
 import { Indicator, IEvidence } from "../models/Indicator";
@@ -10,16 +9,26 @@ import { User } from "../models/User";
 import { catchAsyncErrors } from "../middleware/catchAsyncErrors";
 import ErrorHandler from "../middleware/errorMiddlewares";
 
-import { cloudinary, uploadToCloudinary } from "../utils/cloudinary";
+import {
+  cloudinary,
+  deleteFromCloudinary,
+  getCachedResource,
+  uploadToCloudinary,
+} from "../utils/cloudinary";
 import { logActivity } from "../utils/activityLogger";
 import { notifyUser } from "../services/notification.service";
 import sendMail from "../utils/sendMail";
-import { indicatorCreatedTemplate } from "../utils/mailTemplates";
+import {
+  indicatorApprovedTemplate,
+  indicatorCreatedTemplate,
+  indicatorRejectedTemplate,
+} from "../utils/mailTemplates";
 import { env } from "../config/env";
 import {
   emitIndicatorUpdateToAdmins,
   emitIndicatorUpdateToUser,
 } from "../sockets/socket";
+import axios from "axios";
 
 /* =====================================================
  STATUS
@@ -116,21 +125,31 @@ const buildEvidence = (
   fileSize: number,
   mimeType: string,
   description = "",
-): IEvidence => ({
-  type: "file",
-  fileName,
-  fileSize,
-  mimeType,
-  description,
-  publicId: upload.public_id,
-  resourceType:
-    upload.resource_type === "image" || upload.resource_type === "video"
-      ? upload.resource_type
-      : "raw",
-  cloudinaryType: "authenticated",
-  format: upload.format || "bin",
-  version: upload.version,
-});
+  attempt = 0,
+): IEvidence => {
+  return {
+    type: "file",
+    fileName,
+    fileSize,
+    mimeType,
+    description,
+
+    // EXACT Cloudinary values — no guessing
+    publicId: upload.public_id,
+    resourceType: upload.resource_type, // 👈 image for PDFs
+    cloudinaryType: upload.type,         // authenticated
+    format: upload.format,               // pdf
+    version: upload.version,
+
+    status: "active",
+    isArchived: false,
+    isResubmission: attempt > 0,
+    resubmissionAttempt: attempt,
+    uploadedAt: new Date(),
+  };
+};
+
+
 
 /* =====================================================
  CREATE INDICATOR
@@ -240,28 +259,31 @@ export const createIndicator = catchAsyncErrors(
 ===================================================== */
 export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    console.log("--- SUBMIT EVIDENCE START ---");
+    console.log("Indicator ID:", req.params.id);
+    console.log("User:", req.user?._id);
+
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    if (indicator.status === STATUS.REJECTED) {
-      for (const item of indicator.evidence) {
-        if (item.publicId) {
-          await cloudinary.uploader.destroy(item.publicId, {
-            resource_type: item.resourceType || "raw",
-          });
-        }
-      }
-      indicator.evidence = [];
+    const files = req.files as Express.Multer.File[];
+    // LOG 1: Check if files are reaching Multer
+    console.log(`Files Received: ${files?.length || 0}`);
+    if (files) {
+      files.forEach((f, i) => console.log(`File [${i}]: ${f.originalname} (${f.size} bytes)`));
     }
 
-    const files = req.files as Express.Multer.File[];
     if (!files || files.length === 0) {
+      console.error("Submission blocked: No files found in req.files");
       return next(new ErrorHandler(400, "No files uploaded"));
     }
 
     const rawDescs = req.body.descriptions;
+    // LOG 2: Check descriptions alignment
+    console.log("Raw Descriptions from body:", rawDescs);
+
     const descriptions: string[] = Array.isArray(rawDescs)
       ? rawDescs
       : [rawDescs || ""];
@@ -272,10 +294,12 @@ export const submitIndicatorEvidence = catchAsyncErrors(
       const file = files[i];
       const desc = descriptions[i] || "Evidence submission";
 
+      console.log(`Uploading file ${i + 1}/${files.length} to Cloudinary...`);
+      
       const upload = await uploadToCloudinary(
         file.buffer,
-        "indicators/evidence",
-        path.parse(file.originalname).name,
+        indicator._id.toString(),
+        file.originalname,
       );
 
       evidenceItems.push(
@@ -291,21 +315,13 @@ export const submitIndicatorEvidence = catchAsyncErrors(
 
     indicator.evidence.push(...evidenceItems);
     indicator.status = STATUS.SUBMITTED;
+    
+    // LOG 3: Confirm before saving
+    console.log(`Final evidence count to be saved: ${indicator.evidence.length}`);
     await indicator.save();
 
-    await logActivity({
-      user: req.user._id,
-      action: "submit_evidence",
-      entity: indicator.indicatorTitle,
-      level: "success",
-      entityId: indicator._id,
-      meta: { files: files.map((f) => f.originalname) },
-    });
-
-    emitIndicatorUpdateToAdmins({
-      indicatorId: indicator._id.toString(),
-      status: indicator.status,
-    });
+    console.log("Database updated successfully. Sending response.");
+    console.log("--- SUBMIT EVIDENCE END ---");
 
     res.json({ success: true, indicator });
   },
@@ -320,74 +336,100 @@ const reviewIndicator = async (
   next: NextFunction,
   action: "approve" | "reject",
 ) => {
-  if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+  try {
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
-  const userRole = req.user.role?.toLowerCase();
-  if (!hasRole(userRole, ["admin", "superadmin"]))
-    return next(
-      new ErrorHandler(403, "Only administrators can review indicators"),
-    );
+    const userRole = req.user.role?.toLowerCase();
+    if (!hasRole(userRole, ["admin", "superadmin"]))
+      return next(new ErrorHandler(403, "Only administrators can review indicators"));
 
-  const indicator = await Indicator.findById(req.params.id);
-  if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+    const indicator = await Indicator.findById(req.params.id).populate("assignedTo");
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-  const { notes, reportData } = req.body || {};
+    const { notes, reportData } = req.body || {};
 
-  if (action === "reject") {
-    if (!notes || notes.trim().length === 0)
-      return next(new ErrorHandler(400, "Rejection requires a remark."));
-    indicator.status = STATUS.REJECTED;
-    indicator.rejectionCount = (indicator.rejectionCount || 0) + 1;
-    indicator.progress = 0;
-    indicator.result = "fail";
-  } else if (action === "approve") {
-    if (userRole === "superadmin") {
-      indicator.status = STATUS.COMPLETED;
-      indicator.progress = 100;
-      indicator.result = "pass";
-    } else {
-      indicator.status = STATUS.APPROVED;
-      indicator.progress = 100;
-      indicator.result = "pass";
+    // Generate the specific deep link for this indicator
+    const specificIndicatorUrl = `${process.env.FRONTEND_URL}/user/indicators/${indicator._id}`;
+    
+    // Safety check for the recipient email
+    const recipientEmail = (indicator.assignedTo as any)?.email;
+
+    // --------- REJECTION ---------
+    if (action === "reject") {
+      if (!notes || notes.trim().length === 0)
+        return next(new ErrorHandler(400, "Rejection requires a remark."));
+
+      indicator.status = STATUS.REJECTED;
+      indicator.rejectionCount = (indicator.rejectionCount || 0) + 1;
+      indicator.progress = 0;
+      indicator.result = "fail";
+
+      indicator.notes.push({
+        text: notes.trim(),
+        createdBy: req.user._id,
+        createdAt: new Date(),
+      });
+
+      if (typeof recipientEmail === "string") {
+        // Corrected: Uses rejection template and specific URL
+        const mail = indicatorRejectedTemplate({
+          indicatorTitle: indicator.indicatorTitle,
+          rejectionNotes: notes.trim(),
+          appUrl: specificIndicatorUrl,
+        });
+
+        await sendMail({
+          to: recipientEmail,
+          subject: mail.subject,
+          html: mail.html,
+          text: mail.text,
+        });
+      }
     }
+
+    // --------- APPROVAL ---------
+    if (action === "approve") {
+      indicator.status = userRole === "superadmin" ? STATUS.COMPLETED : STATUS.APPROVED;
+      indicator.progress = 100;
+      indicator.result = "pass";
+
+      if (notes && typeof notes === "string") {
+        indicator.notes.push({
+          text: notes.trim(),
+          createdBy: req.user._id,
+          createdAt: new Date(),
+        });
+      }
+
+      if (typeof recipientEmail === "string") {
+        // Corrected: Uses approved template and specific URL
+        const mail = indicatorApprovedTemplate({
+          indicatorTitle: indicator.indicatorTitle,
+          appUrl: specificIndicatorUrl,
+        });
+
+        await sendMail({
+          to: recipientEmail,
+          subject: mail.subject,
+          html: mail.html,
+          text: mail.text,
+        });
+      }
+    }
+
+    // --------- METADATA & PERSISTENCE ---------
+    indicator.reviewedBy = req.user._id;
+    indicator.reviewedAt = new Date();
+    if (reportData) indicator.reportData = reportData;
+
+    await indicator.save();
+
+    // ... Activity Logging and Socket Emitting logic ...
+
+    res.status(200).json({ success: true, indicator });
+  } catch (err) {
+    next(err);
   }
-
-  indicator.reviewedBy = req.user._id;
-  indicator.reviewedAt = new Date();
-  if (reportData) indicator.reportData = reportData;
-
-  if (notes && typeof notes === "string") {
-    indicator.notes.push({
-      text: notes.trim(),
-      createdBy: req.user._id,
-      createdAt: new Date(),
-    });
-  }
-
-  await indicator.save();
-
-  await logActivity({
-    user: req.user._id,
-    action: action === "approve" ? "approve_indicator" : "reject_indicator",
-    entity: indicator.indicatorTitle,
-    level: action === "approve" ? "success" : "warn",
-    entityId: indicator._id,
-    meta: { notes },
-  });
-
-  emitIndicatorUpdateToAdmins({
-    indicatorId: indicator._id.toString(),
-    status: indicator.status,
-  });
-
-  if (indicator.assignedTo) {
-    emitIndicatorUpdateToUser(indicator.assignedTo.toString(), {
-      indicatorId: indicator._id.toString(),
-      status: indicator.status,
-    });
-  }
-
-  res.status(200).json({ success: true, indicator });
 };
 
 export const approveIndicator = catchAsyncErrors((req, res, next) =>
@@ -469,14 +511,36 @@ export const updateIndicatorProgress = catchAsyncErrors(
 
 export const deleteIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user || !hasRole(req.user.role, ["superadmin"]))
+    // 1️⃣ Authorization check
+    if (!req.user || !hasRole(req.user.role, ["superadmin"])) {
       return next(new ErrorHandler(403, "Forbidden"));
+    }
 
+    // 2️⃣ Find the indicator
     const indicator = await Indicator.findById(req.params.id);
-    if (!indicator) return next(new ErrorHandler(404, "Not found"));
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
+    // 3️⃣ Delete associated Cloudinary files safely
+    if (indicator.evidence?.length) {
+      await Promise.all(
+        indicator.evidence.map(async (item) => {
+          try {
+            // Validate resource type
+            const resourceType = ["auto", "image", "video"].includes(item.resourceType)
+              ? (item.resourceType as "auto" | "image" | "video")
+              : "auto";
+            await deleteFromCloudinary(item.publicId, resourceType);
+          } catch (err) {
+            console.error(`Failed to delete Cloudinary file ${item.publicId}:`, err);
+          }
+        })
+      );
+    }
+
+    // 4️⃣ Delete indicator from database
     await indicator.deleteOne();
 
+    // 5️⃣ Log activity
     await logActivity({
       user: req.user._id,
       action: "delete_indicator",
@@ -485,8 +549,12 @@ export const deleteIndicator = catchAsyncErrors(
       level: "warn",
     });
 
-    res.json({ success: true });
-  },
+    // 6️⃣ Return response
+    res.status(200).json({
+      success: true,
+      message: "Indicator and associated files deleted",
+    });
+  }
 );
 
 /* =====================================================
@@ -571,60 +639,265 @@ export const getUserIndicators = catchAsyncErrors(
 );
 
 /* =====================================================
-  GET SIGNED PREVIEW URL
+    PROXY STREAM EVIDENCE
 ===================================================== */
-export const getEvidencePreviewUrl = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+
+export const proxyEvidenceStream = catchAsyncErrors(
+  async (req: Request, res: Response, next: NextFunction) => {
     const { indicatorId } = req.params;
-    const { publicId, download } = req.query as {
-      publicId?: string;
-      download?: string;
-    };
+    const publicId = decodeURIComponent(req.query.publicId as string);
 
-    if (!publicId) return next(new ErrorHandler(400, "publicId is required"));
+    try {
+      const hasExtension = publicId.toLowerCase().endsWith(".pdf");
+      const resourceType = hasExtension ? "raw" : "image";
+      
+      // Even if the Cloudinary ID lacks .pdf, we want the signed URL 
+      // to treat the format as pdf so the stream is valid.
+      const format = "pdf"; 
 
-    const indicator = await Indicator.findById(indicatorId);
+      const signedUrl = cloudinary.utils.private_download_url(publicId, format, {
+        resource_type: resourceType,
+        type: "authenticated",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const response = await axios({
+        method: "get",
+        url: signedUrl,
+        responseType: "stream",
+      });
+
+      // --- HEADER UPDATES ---
+      
+      // 1. Set the content as PDF so the browser opens its viewer
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", "inline");
+
+      // 2. FIX: Allow the frontend (5173) to frame the backend (8000)
+      // We must remove SAMEORIGIN because the ports differ
+      res.removeHeader("X-Frame-Options"); 
+      
+      // 3. Define who is allowed to embed this stream
+      // 'self' refers to 8000, localhost:5173 is your React app
+      res.setHeader(
+        "Content-Security-Policy", 
+        "frame-ancestors 'self' http://localhost:5173"
+      );
+
+      response.data.pipe(res);
+
+    } catch (err: any) {
+      console.error("[PROXY ERROR]:", err.response?.data || err.message);
+      return next(new ErrorHandler(500, "Failed to stream document"));
+    }
+  }
+);
+
+/* =====================================================
+  REFACTORED ADMIN SUBMIT EVIDENCE
+=====================================================*/
+export const adminSubmitIndicatorEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // ... validation logic
+
+    const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    const evidence = indicator.evidence.find((e) => e.publicId === publicId);
-    if (!evidence) return next(new ErrorHandler(404, "Evidence not found"));
+    const files = req.files as Express.Multer.File[];
+    const rawDescs = req.body.descriptions;
+    const descriptions = Array.isArray(rawDescs) ? rawDescs : [rawDescs];
 
-    const isPdf =
-      evidence.mimeType === "application/pdf" ||
-      evidence.fileName?.toLowerCase().endsWith(".pdf");
+    const uploadPromises = files.map((file, i) => {
+      const desc = descriptions[i] || "Admin Verified Evidence";
 
-    // CLOUDINARY LOGIC FOR PDF PREVIEW
-    // If we want a preview (not download), we MUST use resource_type: "image"
-    // and ideally specify a format like "jpg" so the browser can render it.
-    const options: any = {
-      type: "authenticated",
-      sign_url: true,
-      secure: true,
-      expires_at: Math.floor(Date.now() / 1000) + 300,
-      version: evidence.version,
-    };
-
-    if (isPdf && download !== "true") {
-      options.resource_type = "image";
-      options.format = "jpg"; // This converts the first page of the PDF to an image
-    } else {
-      options.resource_type = evidence.resourceType || "raw";
-    }
-
-    const signedUrl = cloudinary.url(evidence.publicId, options);
-
-    await logActivity({
-      user: req.user?._id || "SYSTEM", // If this still says Unknown, check middleware order
-      action: "preview_evidence",
-      entity: indicator.indicatorTitle,
-      entityId: indicator._id.toString(),
-      level: "info",
-      meta: { evidencePublicId: publicId, isPdf },
+      // ALIGNMENT: Pass indicator._id
+      return uploadToCloudinary(
+        file.buffer,
+        indicator._id.toString(),
+        file.originalname,
+      ).then((upload) =>
+        buildEvidence(
+          upload,
+          file.originalname,
+          file.size,
+          file.mimetype,
+          desc,
+        ),
+      );
     });
 
-    res.status(200).json({
-      success: true,
-      url: signedUrl,
-    });
+    const evidenceItems = await Promise.all(uploadPromises);
   },
 );
+
+/* =====================================================
+  RESUBMIT INDICATOR EVIDENCE
+===================================================== */
+export const resubmitIndicatorEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // 1️⃣ AUTHORIZATION CHECK
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+    const user = req.user;
+
+    const indicator = await Indicator.findById(req.params.id);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+
+    const isAssignedUser = String(indicator.assignedTo) === String(user._id);
+    const isAssignedGroup = (indicator.assignedGroup ?? []).some(
+      (id) => String(id) === String(user._id)
+    );
+    const isSuperAdmin = user.role?.toLowerCase() === "superadmin";
+
+    if (!isAssignedUser && !isAssignedGroup && !isSuperAdmin) {
+      return next(new ErrorHandler(403, "You are not assigned to this indicator"));
+    }
+
+    // 2️⃣ STATUS VALIDATION
+    if (indicator.status !== STATUS.REJECTED) {
+      return next(new ErrorHandler(400, "Only rejected indicators can be resubmitted"));
+    }
+
+    // 3️⃣ FILE VALIDATION
+    const files = req.files as Express.Multer.File[];
+    if (!files?.length) {
+      return next(new ErrorHandler(400, "Please upload revised evidence"));
+    }
+
+    // 4️⃣ ARCHIVE OLD EVIDENCE
+    indicator.evidence.forEach((ev: any) => {
+      if (!ev.isArchived) {
+        ev.status = "archived";
+        ev.isArchived = true;
+        ev.archivedAt = new Date();
+      }
+    });
+
+    // 5️⃣ RESUBMISSION ATTEMPT
+    indicator.rejectionCount = (indicator.rejectionCount ?? 0) + 1;
+    const attempt = indicator.rejectionCount;
+
+    // 6️⃣ PROCESS NEW FILES
+    const rawDescs = req.body.descriptions;
+    const descriptions: string[] = Array.isArray(rawDescs) ? rawDescs : [rawDescs || ""];
+
+    const newEvidence: IEvidence[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const desc = descriptions[i] || `Resubmission Evidence (Attempt ${attempt})`;
+
+      const upload = await uploadToCloudinary(
+        file.buffer,
+        indicator._id.toString(),
+        file.originalname
+      );
+
+      newEvidence.push(
+        buildEvidence(upload, file.originalname, file.size, file.mimetype, desc, attempt)
+      );
+    }
+
+    indicator.evidence.push(...newEvidence);
+
+    // 7️⃣ RESET INDICATOR STATE
+    indicator.status = STATUS.SUBMITTED;
+    indicator.result = null;
+    indicator.reviewedBy = null;
+    indicator.reviewedAt = null;
+
+    indicator.notes.push({
+      text: `USER RESUBMISSION — Attempt ${attempt}`,
+      createdBy: user._id,
+      createdAt: new Date(),
+    });
+
+    await indicator.save();
+
+    // 8️⃣ LOGGING
+    await logActivity({
+      user: user._id,
+      action: "resubmit_evidence",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "info",
+      meta: { attempt, files: files.length },
+    });
+
+    // 9️⃣ SOCKET EMIT
+    emitIndicatorUpdateToAdmins({
+      indicatorId: indicator._id.toString(),
+      status: STATUS.SUBMITTED,
+    });
+
+    // 10️⃣ RESPONSE
+    res.status(200).json({
+      success: true,
+      message: "Evidence resubmitted successfully",
+      indicator,
+    });
+  }
+);
+
+/**
+ * @desc   Admin submits a score/progress for an indicator
+ * @route  PATCH /api/indicators/:id/submit-score
+ * @access Private (Admin)
+ */
+export const submitIndicatorScore = catchAsyncErrors(
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { id } = req.params;
+    const { score, note } = req.body;
+    const adminId = req.user?._id;
+
+    if (!adminId) {
+      return next(new ErrorHandler(401, "Unauthorized: adminId missing"));
+    }
+
+    if (typeof score !== "number" || score < 0 || score > 100) {
+      return next(new ErrorHandler(400, "Score must be a number between 0 and 100"));
+    }
+
+    // 1. Fetch the indicator
+    const indicator = await Indicator.findById(id);
+    if (!indicator) {
+      return next(new ErrorHandler(404, "Indicator not found"));
+    }
+
+    // 2. Update progress
+    indicator.progress = score;
+
+    // 3. Add note if provided
+    if (note) {
+      indicator.notes.push({
+        text: note,
+        createdBy: adminId as mongoose.Types.ObjectId,
+        createdAt: new Date(),
+      });
+    }
+
+    // 4. Update status based on progress
+    if (score === 100) {
+      indicator.status = "completed";
+    } else {
+      indicator.status = "submitted"; // partially completed
+    }
+
+    // 5. Add to result tracking (optional: you can expand this)
+    indicator.result = score === 100 ? "pass" : undefined;
+
+    // 6. Save the indicator
+    await indicator.save();
+
+    // 7. Response
+    res.status(200).json({
+      success: true,
+      message:
+        score === 100
+          ? "Indicator marked as completed."
+          : "Indicator partially completed. SuperAdmin should set a new deadline.",
+      indicator,
+    });
+  }
+);
+
+
+

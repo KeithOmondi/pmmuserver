@@ -51,4 +51,5 @@ router.get("/userhtml/html", isAuthenticated, getReportHtml);
 router.get("/getpdf/pdf/:id", isAuthenticated, getReportPdfById);
 router.get("/gethtml/html/:id", isAuthenticated, getReportHtmlById);
 
+
 export default router;

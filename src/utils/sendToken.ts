@@ -1,5 +1,6 @@
 import { Response } from "express";
 import jwt from "jsonwebtoken";
+import ms from "ms";
 import { UserDocument } from "../models/User";
 import { env } from "../config/env";
 
@@ -16,40 +17,49 @@ export const sendToken = ({
   message,
   res,
 }: SendTokenOptions): void => {
-  
-  // Create payload including the tokenVersion
-  const payload = { 
+  const isProduction = env.NODE_ENV === "production";
+
+  const payload = {
     id: user._id.toString(),
-    tokenVersion: user.tokenVersion // Essential for the security check
+    tokenVersion: user.tokenVersion,
   };
 
-  // Access token (SHORT LIVED)
-  const accessToken = jwt.sign(
-    payload,
-    env.JWT_SECRET!,
-    { expiresIn: "15m" }
-  );
+  const accessToken = jwt.sign(payload, env.JWT_SECRET, {
+    expiresIn: env.JWT_EXPIRE,
+  });
 
-  // Refresh token (LONG LIVED)
-  const refreshToken = jwt.sign(
-    payload,
-    env.JWT_REFRESH_SECRET!,
-    { expiresIn: "7d" }
-  );
+  const refreshToken = jwt.sign(payload, env.JWT_REFRESH_SECRET, {
+    expiresIn: env.JWT_REFRESH_EXPIRE,
+  });
 
-  // Store refresh token in cookie
-  res.cookie("refreshToken", refreshToken, {
+  // Type-safe cookie options
+  const cookieOptions: {
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "lax" | "strict" | "none";
+    path: string;
+  } = {
     httpOnly: true,
-    secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
     path: "/",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
+
+  // Access Token (short-lived)
+  res.cookie("accessToken", accessToken, {
+    ...cookieOptions,
+    maxAge: ms(env.JWT_EXPIRE),
+  });
+
+  // Refresh Token (long-lived)
+  res.cookie("refreshToken", refreshToken, {
+    ...cookieOptions,
+    maxAge: ms(env.JWT_REFRESH_EXPIRE),
   });
 
   res.status(statusCode).json({
     success: true,
     message,
-    accessToken,
     user: {
       _id: user._id.toString(),
       name: user.name,
@@ -57,7 +67,7 @@ export const sendToken = ({
       pjNumber: user.pjNumber,
       role: user.role,
       accountVerified: user.accountVerified,
-      avatar: user.avatar?.url || "", 
+      avatar: user.avatar?.url || "",
     },
   });
 };

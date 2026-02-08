@@ -1,6 +1,6 @@
 // src/routes/adminRoutes.ts
 import express from "express";
-import { getLiveActivityFeed, clearActivityFeed } from "../controllers/adminController";
+import { getLiveActivityFeed, clearActivityFeed, getOnlineUsers } from "../controllers/adminController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 
 const router = express.Router();
@@ -13,5 +13,13 @@ router.route("/activity-feed")
 
 router.route("/activity-feed/clear")
   .delete(isAuthenticated, isAuthorized("SuperAdmin"), clearActivityFeed);
+
+  router.get(
+  "/users/online-users",
+  isAuthenticated,
+  isAuthorized("SuperAdmin"),
+  getOnlineUsers
+);
+
 
 export default router;

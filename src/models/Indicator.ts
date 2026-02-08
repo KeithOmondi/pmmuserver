@@ -1,19 +1,23 @@
 import mongoose, { Schema, Model, Types, HydratedDocument } from "mongoose";
 
 /* =====================================================
-    TYPES & INTERFACES
+   TYPES & INTERFACES
 ===================================================== */
 
 export type IndicatorStatus =
   | "pending"
   | "submitted"
+  | "partially_completed" // NEW
   | "approved"
   | "completed"
   | "rejected"
   | "overdue";
 
+export type EvidenceStatus = "active" | "rejected" | "archived";
+
 export interface IEvidence {
   type: "file";
+
   fileName: string;
   fileSize: number;
   mimeType: string;
@@ -23,14 +27,27 @@ export interface IEvidence {
   resourceType: "raw" | "image" | "video";
   cloudinaryType: "authenticated" | "upload";
   format: string;
+  version: number;
 
-  version: number; // ✅ Added Cloudinary version per file
+  /* === NEW FIELDS === */
+  status: EvidenceStatus;
+  isArchived: boolean;
+  isResubmission: boolean;
+  resubmissionAttempt: number;
+  archivedAt?: Date;
+  uploadedAt: Date;
 }
 
 export interface INote {
   text: string;
   createdBy: Types.ObjectId;
   createdAt: Date;
+}
+
+export interface IScoreHistory {
+  score: number;
+  submittedBy: Types.ObjectId;
+  submittedAt: Date;
 }
 
 export interface IIndicator {
@@ -45,6 +62,7 @@ export interface IIndicator {
 
   startDate: Date;
   dueDate: Date;
+  nextDeadline?: Date; // NEW: for partial completion
 
   progress: number;
 
@@ -55,10 +73,11 @@ export interface IIndicator {
   status: IndicatorStatus;
 
   rejectionCount: number;
-
   result?: "pass" | "fail" | null;
   reviewedBy?: Types.ObjectId | null;
   reviewedAt?: Date | null;
+
+  scoreHistory?: IScoreHistory[]; // NEW: track admin scores
 
   reportData?: Record<string, unknown>;
   calendarEvent?: Record<string, unknown> | null;
@@ -70,12 +89,13 @@ export interface IIndicator {
 export type IndicatorDocument = HydratedDocument<IIndicator>;
 
 /* =====================================================
-    SUB SCHEMAS
+   SUB SCHEMAS
 ===================================================== */
 
 const evidenceSchema = new Schema<IEvidence>(
   {
     type: { type: String, enum: ["file"], required: true },
+
     fileName: { type: String, required: true },
     fileSize: { type: Number, required: true },
     mimeType: { type: String, required: true },
@@ -96,8 +116,20 @@ const evidenceSchema = new Schema<IEvidence>(
     },
 
     format: { type: String, required: true },
+    version: { type: Number, required: true },
 
-    version: { type: Number, required: false }, // ✅ version added here
+    /* === AUDIT / RESUBMISSION === */
+    status: {
+      type: String,
+      enum: ["active", "rejected", "archived"],
+      default: "active",
+    },
+
+    isArchived: { type: Boolean, default: false },
+    isResubmission: { type: Boolean, default: false },
+    resubmissionAttempt: { type: Number, default: 0 },
+    archivedAt: Date,
+    uploadedAt: { type: Date, default: Date.now },
   },
   { _id: false },
 );
@@ -111,8 +143,17 @@ const noteSchema = new Schema<INote>(
   { _id: false },
 );
 
+const scoreHistorySchema = new Schema<IScoreHistory>(
+  {
+    score: { type: Number, required: true, min: 0, max: 100 },
+    submittedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    submittedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 /* =====================================================
-    MAIN SCHEMA
+   MAIN SCHEMA
 ===================================================== */
 
 const indicatorSchema = new Schema<IIndicator>(
@@ -132,21 +173,12 @@ const indicatorSchema = new Schema<IIndicator>(
       enum: ["individual", "group"],
       required: true,
     },
-
-    assignedTo: {
-      type: Schema.Types.ObjectId,
-      ref: "User",
-      default: null,
-    },
-
-    assignedGroup: {
-      type: [Schema.Types.ObjectId],
-      ref: "User",
-      default: [],
-    },
+    assignedTo: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    assignedGroup: { type: [Schema.Types.ObjectId], ref: "User", default: [] },
 
     startDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
+    nextDeadline: { type: Date }, // NEW
 
     progress: {
       type: Number,
@@ -166,6 +198,7 @@ const indicatorSchema = new Schema<IIndicator>(
       enum: [
         "pending",
         "submitted",
+        "partially_completed", // NEW
         "approved",
         "completed",
         "rejected",
@@ -175,11 +208,12 @@ const indicatorSchema = new Schema<IIndicator>(
     },
 
     rejectionCount: { type: Number, default: 0 },
-
     result: { type: String, enum: ["pass", "fail"], default: null },
 
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     reviewedAt: { type: Date, default: null },
+
+    scoreHistory: { type: [scoreHistorySchema], default: [] }, // NEW
 
     reportData: { type: Schema.Types.Mixed, default: {} },
     calendarEvent: { type: Schema.Types.Mixed, default: null },
@@ -200,7 +234,7 @@ indicatorSchema.path("assignedGroup").validate(function () {
 }, "At least one assignee (individual or group) is required");
 
 /* =====================================================
-    MODEL
+   MODEL
 ===================================================== */
 
 export const Indicator: Model<IIndicator> =

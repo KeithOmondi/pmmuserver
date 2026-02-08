@@ -8,49 +8,89 @@ cloudinary.config({
 });
 
 /* =====================================================
-   UPLOAD (NO CHANGE – THIS IS ALREADY CORRECT)
+   UPLOAD HELPER (FINAL)
 ===================================================== */
-
 export const uploadToCloudinary = async (
   fileBuffer: Buffer,
-  folder: string,
-  publicId: string,
+  indicatorId: string,
+  originalFileName: string
 ): Promise<UploadApiResponse> => {
+  const timestamp = Date.now();
+
+  // Strip extension + normalize filename
+  const cleanFileName = originalFileName
+    .replace(/\s+/g, "_")
+    .replace(/\.[^/.]+$/, "");
+
+  const publicId = `${timestamp}-${cleanFileName}`;
+  const folder = `indicators/evidence/${indicatorId}`;
+
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder,
-        public_id: `${Date.now()}-${publicId}`,
+        public_id: publicId,
         resource_type: "auto",
         type: "authenticated",
         overwrite: false,
       },
       (error, result) => {
         if (error || !result) return reject(error);
+
+        /**
+         * result.public_id will be:
+         * indicators/evidence/{indicatorId}/{timestamp-name}
+         */
         resolve(result);
-      },
+      }
     );
 
     stream.end(fileBuffer);
   });
 };
 
-/* =====================================================
-   SIGNED PREVIEW URL (FIXED)
-===================================================== */
 
-export const getSignedPreviewUrl = (
-  publicId: string,
-  resourceType: "raw" | "image" | "video" = "raw",
-  expiresInSeconds = 300,
+type CachedResource = {
+  data: any;
+  expiresAt: number;
+};
+
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const cloudinaryCache = new Map<string, CachedResource>();
+
+export const getCachedResource = async (
+  cacheKey: string,
+  fetcher: () => Promise<any>
 ) => {
-  return cloudinary.url(publicId, {
+  const now = Date.now();
+  const cached = cloudinaryCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > now) {
+    return cached.data;
+  }
+
+  const data = await fetcher();
+
+  cloudinaryCache.set(cacheKey, {
+    data,
+    expiresAt: now + CACHE_TTL,
+  });
+
+  return data;
+};
+
+
+
+export const deleteFromCloudinary = async (
+  publicId: string,
+  resourceType: "image" | "raw" | "video" | "auto" = "auto" // Added "auto" here
+) => {
+  return cloudinary.uploader.destroy(publicId, {
     resource_type: resourceType,
     type: "authenticated",
-    sign_url: true,
-    secure: true,
-    expires_at: Math.floor(Date.now() / 1000) + expiresInSeconds,
+    invalidate: true,
   });
 };
+
 
 export { cloudinary };

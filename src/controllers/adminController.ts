@@ -47,3 +47,55 @@ export const clearActivityFeed = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Action failed" });
   }
 };
+
+
+
+export const getOnlineUsers = async (req: Request, res: Response) => {
+  try {
+    if (!redisClient.isOpen) {
+      await redisClient.connect();
+    }
+
+    // Find all active sessions
+    const keys = await redisClient.keys("session:*");
+
+    if (keys.length === 0) {
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        users: [],
+      });
+    }
+
+    const sessions = await Promise.all(
+      keys.map(async (key) => {
+        const data = await redisClient.hGetAll(key);
+        if (!data?.userId) return null;
+
+        return {
+          userId: data.userId,
+          email: data.email,
+          role: data.role,
+          loginAt: data.loginAt,
+          ip: data.ip,
+          userAgent: data.userAgent,
+          sessionKey: key,
+        };
+      })
+    );
+
+    const onlineUsers = sessions.filter(Boolean);
+
+    res.status(200).json({
+      success: true,
+      count: onlineUsers.length,
+      users: onlineUsers,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch online users",
+      error: err.message,
+    });
+  }
+};
