@@ -15,6 +15,7 @@ import {
   proxyEvidenceStream,
   resubmitIndicatorEvidence,
   submitIndicatorScore,
+  deleteSingleEvidence,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -155,5 +156,7 @@ router.post(
   isAuthorized("admin", "superadmin"),
   submitIndicatorScore
 );
+
+router.delete("/:id/evidence/:evidenceId", isAuthenticated, deleteSingleEvidence);
 
 export default router;

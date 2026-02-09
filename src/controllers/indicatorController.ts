@@ -929,3 +929,90 @@ export const submitIndicatorScore = catchAsyncErrors(
     });
   },
 );
+
+
+/* =====================================================
+  DELETE SINGLE EVIDENCE ITEM
+===================================================== */
+/* =====================================================
+  DELETE SINGLE EVIDENCE ITEM (User Accessible)
+===================================================== */
+export const deleteSingleEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const { id, evidenceId } = req.params;
+
+    // 1️⃣ Authentication check
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+    const user = req.user;
+
+    // 2️⃣ Find the indicator
+    const indicator = await Indicator.findById(id);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+
+    // 3️⃣ Detailed Authorization check
+    const isAssignedUser = String(indicator.assignedTo) === String(user._id);
+    const isAssignedGroup = (indicator.assignedGroup ?? []).some(
+      (userId) => String(userId) === String(user._id)
+    );
+    const isSuperAdmin = hasRole(user.role, ["superadmin", "admin"]);
+
+    if (!isAssignedUser && !isAssignedGroup && !isSuperAdmin) {
+      return next(
+        new ErrorHandler(403, "You do not have permission to modify this indicator")
+      );
+    }
+
+    // 4️⃣ Check Status (Optional Safeguard)
+    // You might want to prevent deletion if the indicator is already "Approved" or "Completed"
+    if (indicator.status === STATUS.COMPLETED && !isSuperAdmin) {
+      return next(new ErrorHandler(400, "Cannot delete evidence from a completed indicator"));
+    }
+
+    // 5️⃣ Find the specific evidence item
+    const evidenceItem = indicator.evidence.find(
+      (ev: any) => String(ev._id) === evidenceId
+    );
+
+    if (!evidenceItem) {
+      return next(new ErrorHandler(404, "Evidence document not found"));
+    }
+
+    // 6️⃣ Delete from Cloudinary
+    try {
+      const resourceType = ["auto", "image", "video"].includes(evidenceItem.resourceType)
+        ? (evidenceItem.resourceType as "auto" | "image" | "video")
+        : "auto";
+
+      await deleteFromCloudinary(evidenceItem.publicId, resourceType);
+    } catch (err) {
+      // We log the error but continue so the DB doesn't stay stuck with a broken link
+      console.error(`Cloudinary deletion failed for ${evidenceItem.publicId}:`, err);
+    }
+
+    // 7️⃣ Remove from MongoDB array
+    (indicator.evidence as any).pull(evidenceId);
+
+    // 8️⃣ Logic: If user deletes all evidence, revert status to pending?
+    if (indicator.evidence.length === 0 && indicator.status === STATUS.SUBMITTED) {
+      indicator.status = STATUS.PENDING;
+    }
+
+    await indicator.save();
+
+    // 9️⃣ Log activity
+    await logActivity({
+      user: user._id,
+      action: "delete_evidence_item",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "info",
+      meta: { fileName: evidenceItem.fileName, evidenceId }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Document deleted successfully",
+      indicator,
+    });
+  }
+);
