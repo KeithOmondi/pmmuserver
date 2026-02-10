@@ -107,7 +107,7 @@ const categories: SeedCategory[] = [
   },
   {
     code: "A.1.4.b",
-    title: "Facilitate all approved circuits, service weeks and RRIs",
+    title: "Facilitate all approved circuits",
     parentCode: "A.1.4",
     level: 3,
   },
@@ -120,6 +120,12 @@ const categories: SeedCategory[] = [
   {
     code: "A.1.4.d",
     title: "Develop needs assessment report for ADRs & legal researchers",
+    parentCode: "A.1.4",
+    level: 3,
+  },
+  {
+    code: "A.1.4.e",
+    title: "Facilitate service weeks and RRIs",
     parentCode: "A.1.4",
     level: 3,
   },
