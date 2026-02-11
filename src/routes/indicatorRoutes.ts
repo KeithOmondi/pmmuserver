@@ -38,7 +38,7 @@ router.post(
 router.put(
   "/update/:id",
   isAuthenticated,
-  isAuthorized("superadmin"),
+  isAuthorized("superadmin", "admin"),
   updateIndicator,
 );
 

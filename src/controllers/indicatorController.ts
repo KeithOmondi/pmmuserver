@@ -451,23 +451,33 @@ export const rejectIndicator = catchAsyncErrors((req, res, next) =>
 ===================================================== */
 export const updateIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user || req.user.role !== "SuperAdmin")
+    // UPDATED: Check for both SuperAdmin and Admin roles
+    const userRole = req.user?.role?.toLowerCase();
+    const isAuthorized = userRole === "superadmin" || userRole === "admin";
+
+    if (!req.user || !isAuthorized) {
       return next(
-        new ErrorHandler(403, "Only Super Admins can modify registries"),
+        new ErrorHandler(403, "Only Admins and Super Admins can modify registries"),
       );
+    }
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
+    // Extract notes separately so they don't overwrite the array via .set()
     const { notes, ...otherData } = req.body;
+
+    // Prevent accidental modification of immutable fields
     delete otherData._id;
     delete otherData.createdAt;
 
+    // Update indicator fields
     indicator.set(otherData);
 
+    // Handle notes push
     if (notes && typeof notes === "string" && notes.trim() !== "") {
       indicator.notes.push({
-        text: notes,
+        text: notes.trim(),
         createdBy: req.user._id,
         createdAt: new Date(),
       });
@@ -475,13 +485,17 @@ export const updateIndicator = catchAsyncErrors(
 
     await indicator.save();
 
+    // Log the activity
     await logActivity({
       user: req.user._id,
       action: "update_indicator",
       entity: indicator.indicatorTitle,
       entityId: indicator._id,
       level: "info",
-      meta: { updatedFields: Object.keys(otherData) },
+      meta: { 
+        updatedFields: Object.keys(otherData),
+        role: req.user.role // Helpful to see which role performed the update in logs
+      },
     });
 
     res.status(200).json({ success: true, indicator });
