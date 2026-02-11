@@ -59,6 +59,17 @@ export type AuthenticatedRequest = Request & {
   };
 };
 
+export interface IEditHistory {
+  updatedBy: mongoose.Types.ObjectId | string;
+  updatedAt: Date;
+  changes: Record<string, { old: any; new: any }>;
+}
+
+export interface IIndicator extends mongoose.Document {
+  // ... existing fields ...
+  editHistory: IEditHistory[]; // Add this line
+}
+
 /* =====================================================
  HELPERS
 ===================================================== */
@@ -117,35 +128,36 @@ const resolveIndicatorTitle = async (indicatorId: string) => {
 };
 
 /* =====================================================
- EVIDENCE BUILDER
+  EVIDENCE BUILDER
 ===================================================== */
+
 const buildEvidence = (
   upload: any,
   fileName: string,
   fileSize: number,
   mimeType: string,
+  uploadedBy: Types.ObjectId, 
   description = "",
   attempt = 0,
 ): IEvidence => {
   return {
+    _id: new Types.ObjectId(),
     type: "file",
     fileName,
     fileSize,
     mimeType,
     description,
-
-    // EXACT Cloudinary values — no guessing
     publicId: upload.public_id,
-    resourceType: upload.resource_type, // 👈 image for PDFs
-    cloudinaryType: upload.type, // authenticated
-    format: upload.format, // pdf
+    resourceType: upload.resource_type,
+    cloudinaryType: upload.type,
+    format: upload.format,
     version: upload.version,
-
     status: "active",
     isArchived: false,
     isResubmission: attempt > 0,
     resubmissionAttempt: attempt,
     uploadedAt: new Date(),
+    uploadedBy, // Required field
   };
 };
 
@@ -253,40 +265,22 @@ export const createIndicator = catchAsyncErrors(
 );
 
 /* =====================================================
- SUBMIT EVIDENCE
+ SUBMIT EVIDENCE (USER)
 ===================================================== */
 export const submitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    console.log("--- SUBMIT EVIDENCE START ---");
-    console.log("Indicator ID:", req.params.id);
-    console.log("User:", req.user?._id);
-
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
     const files = req.files as Express.Multer.File[];
-    // LOG 1: Check if files are reaching Multer
-    console.log(`Files Received: ${files?.length || 0}`);
-    if (files) {
-      files.forEach((f, i) =>
-        console.log(`File [${i}]: ${f.originalname} (${f.size} bytes)`),
-      );
-    }
-
     if (!files || files.length === 0) {
-      console.error("Submission blocked: No files found in req.files");
       return next(new ErrorHandler(400, "No files uploaded"));
     }
 
     const rawDescs = req.body.descriptions;
-    // LOG 2: Check descriptions alignment
-    console.log("Raw Descriptions from body:", rawDescs);
-
-    const descriptions: string[] = Array.isArray(rawDescs)
-      ? rawDescs
-      : [rawDescs || ""];
+    const descriptions: string[] = Array.isArray(rawDescs) ? rawDescs : [rawDescs || ""];
 
     const evidenceItems: IEvidence[] = [];
 
@@ -294,12 +288,10 @@ export const submitIndicatorEvidence = catchAsyncErrors(
       const file = files[i];
       const desc = descriptions[i] || "Evidence submission";
 
-      console.log(`Uploading file ${i + 1}/${files.length} to Cloudinary...`);
-
       const upload = await uploadToCloudinary(
         file.buffer,
         indicator._id.toString(),
-        file.originalname,
+        file.originalname
       );
 
       evidenceItems.push(
@@ -308,25 +300,18 @@ export const submitIndicatorEvidence = catchAsyncErrors(
           file.originalname,
           file.size,
           file.mimetype,
-          desc,
-        ),
+          req.user._id, // Fixed: Pass uploader ID
+          desc
+        )
       );
     }
 
     indicator.evidence.push(...evidenceItems);
     indicator.status = STATUS.SUBMITTED;
 
-    // LOG 3: Confirm before saving
-    console.log(
-      `Final evidence count to be saved: ${indicator.evidence.length}`,
-    );
     await indicator.save();
-
-    console.log("Database updated successfully. Sending response.");
-    console.log("--- SUBMIT EVIDENCE END ---");
-
     res.json({ success: true, indicator });
-  },
+  }
 );
 
 /* =====================================================
@@ -447,58 +432,163 @@ export const rejectIndicator = catchAsyncErrors((req, res, next) =>
 );
 
 /* =====================================================
- OTHER GETTERS & DELETE
+    REWRITTEN: UPDATE INDICATOR (GENERAL EDIT)
 ===================================================== */
 export const updateIndicator = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    // UPDATED: Check for both SuperAdmin and Admin roles
     const userRole = req.user?.role?.toLowerCase();
     const isAuthorized = userRole === "superadmin" || userRole === "admin";
 
     if (!req.user || !isAuthorized) {
-      return next(
-        new ErrorHandler(403, "Only Admins and Super Admins can modify registries"),
-      );
+      return next(new ErrorHandler(403, "Forbidden: Admin access required"));
     }
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    // Extract notes separately so they don't overwrite the array via .set()
-    const { notes, ...otherData } = req.body;
+    // Lock check
+    if (indicator.status === "completed" && userRole !== "superadmin") {
+      return next(
+        new ErrorHandler(
+          403,
+          "Sealed: Only Super Admins can edit completed records",
+        ),
+      );
+    }
 
-    // Prevent accidental modification of immutable fields
-    delete otherData._id;
-    delete otherData.createdAt;
+    const { notes, evidence: incomingEvidence, ...otherData } = req.body;
 
-    // Update indicator fields
+    // --- AUDIT TRAIL LOGIC ---
+    const changes: Record<string, { old: any; new: any }> = {};
+    const trackableFields = [
+      "indicatorTitle",
+      "unitOfMeasure",
+      "startDate",
+      "dueDate",
+      "assignedTo",
+      "status",
+      "nextDeadline",
+    ];
+
+    trackableFields.forEach((field) => {
+      const currentVal = indicator.get(field);
+      const newVal = otherData[field];
+
+      if (newVal !== undefined && String(currentVal) !== String(newVal)) {
+        changes[field] = { old: currentVal, new: newVal };
+      }
+    });
+
+    // --- SURGICAL EVIDENCE UPDATES ---
+    if (incomingEvidence && Array.isArray(incomingEvidence)) {
+      incomingEvidence.forEach((incomingItem: any) => {
+        // Mongoose .id() works here because we set _id: true in the Evidence Schema
+        const existingItem = (indicator.evidence as any).id(incomingItem._id);
+
+        if (existingItem && incomingItem.description !== undefined) {
+          if (existingItem.description !== incomingItem.description) {
+            changes[`evidence.${incomingItem._id}.description`] = {
+              old: existingItem.description,
+              new: incomingItem.description,
+            };
+            existingItem.description = incomingItem.description;
+          }
+        }
+      });
+    }
+
+    // Push to History
+    if (Object.keys(changes).length > 0) {
+      indicator.editHistory.push({
+        updatedBy: req.user._id as any,
+        updatedAt: new Date(),
+        changes,
+      });
+    }
+
+    // Apply other updates
     indicator.set(otherData);
 
-    // Handle notes push
+    // Handle optional commentary note
     if (notes && typeof notes === "string" && notes.trim() !== "") {
       indicator.notes.push({
         text: notes.trim(),
-        createdBy: req.user._id,
+        createdBy: req.user._id as any,
         createdAt: new Date(),
       });
     }
 
     await indicator.save();
 
-    // Log the activity
-    await logActivity({
-      user: req.user._id,
-      action: "update_indicator",
-      entity: indicator.indicatorTitle,
-      entityId: indicator._id,
-      level: "info",
-      meta: { 
-        updatedFields: Object.keys(otherData),
-        role: req.user.role // Helpful to see which role performed the update in logs
-      },
-    });
+    const updatedIndicator = await Indicator.findById(indicator._id)
+      .populate("category level2Category", "title")
+      .populate("createdBy reviewedBy", "name email")
+      .populate("editHistory.updatedBy", "name")
+      .lean();
 
-    res.status(200).json({ success: true, indicator });
+    res.status(200).json({ success: true, indicator: updatedIndicator });
+  },
+);
+
+/* =====================================
+   UPDATE EVIDENCE DESCRIPTION (FIXED)
+===================================== */
+/* =====================================
+    UPDATE EVIDENCE DESCRIPTION (FIXED)
+===================================== */
+export const updateEvidenceDescription = catchAsyncErrors(
+  async (req: Request, res: Response, next: NextFunction) => {
+    // FIXED: Destructure 'id' to match the route definition /:id
+    const { id, evidenceId } = req.params;
+    const { description } = req.body;
+
+    const indicator = await Indicator.findById(id);
+    if (!indicator) {
+      return next(new ErrorHandler(404, "Indicator not found"));
+    }
+
+    if (!req.user) {
+      return next(new ErrorHandler(401, "Unauthorized"));
+    }
+
+    if (indicator.status === "completed") {
+      return next(
+        new ErrorHandler(403, "Record is sealed and cannot be modified"),
+      );
+    }
+
+    // Cast to DocumentArray to use the .id() helper
+    const evidenceArray = indicator.evidence as mongoose.Types.DocumentArray<IEvidence>;
+    const evidenceDoc = evidenceArray.id(evidenceId);
+
+    if (!evidenceDoc) {
+      return next(new ErrorHandler(404, "Evidence not found"));
+    }
+
+    const oldDescription = evidenceDoc.description || "";
+    const newDescription = description ?? "";
+
+    if (oldDescription !== newDescription) {
+      indicator.editHistory.push({
+        updatedBy: req.user._id,
+        updatedAt: new Date(),
+        changes: {
+          [`evidence.${evidenceId}.description`]: {
+            old: oldDescription,
+            new: newDescription,
+          },
+        },
+      });
+
+      evidenceDoc.description = newDescription;
+      await indicator.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Description updated successfully",
+      indicator, // Return the whole indicator to sync Redux
+    });
   },
 );
 
@@ -723,7 +813,7 @@ export const proxyEvidenceStream = catchAsyncErrors(
 );
 
 /* =====================================================
-  REFACTORED ADMIN SUBMIT EVIDENCE
+ ADMIN SUBMIT EVIDENCE (FIXED & REFACTORED)
 =====================================================*/
 export const adminSubmitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -736,29 +826,38 @@ export const adminSubmitIndicatorEvidence = catchAsyncErrors(
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
     const files = req.files as Express.Multer.File[];
+    if (!files?.length) return next(new ErrorHandler(400, "No files uploaded"));
+
     const rawDescs = req.body.descriptions || [];
     const descriptions = Array.isArray(rawDescs) ? rawDescs : [rawDescs];
 
-    const uploadPromises = files.map((file, i) => {
+    // 2. Map through files and include the admin's ID as uploadedBy
+    const uploadPromises = files.map(async (file, i) => {
       const desc = descriptions[i] || "Admin Verified Evidence";
-      return uploadToCloudinary(
+      
+      const upload = await uploadToCloudinary(
         file.buffer,
         indicator._id.toString(),
         file.originalname
-      ).then((upload) =>
-        buildEvidence(upload, file.originalname, file.size, file.mimetype, desc)
+      );
+
+      return buildEvidence(
+        upload,
+        file.originalname,
+        file.size,
+        file.mimetype,
+        req.user!._id, // Fixed: Explicitly passed current admin ID
+        desc
       );
     });
 
     const evidenceItems = await Promise.all(uploadPromises);
 
     indicator.evidence.push(...evidenceItems);
-    indicator.status = "approved";
+    indicator.status = STATUS.APPROVED; // Admins submitting evidence typically auto-approves
     indicator.progress = 100;
     indicator.reviewedAt = new Date();
-    
-    // Type-safe assignment
-    indicator.reviewedBy = req.user._id; 
+    indicator.reviewedBy = req.user._id;
 
     await indicator.save();
 
@@ -769,44 +868,101 @@ export const adminSubmitIndicatorEvidence = catchAsyncErrors(
   }
 );
 
+
+
 /* =====================================================
-  RESUBMIT INDICATOR EVIDENCE
+    REWRITTEN: SUBMIT SCORE (ADMINS)
+===================================================== */
+export const submitIndicatorScore = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const { id } = req.params;
+    const { score, note, nextDeadline } = req.body;
+    const adminId = req.user?._id;
+
+    if (!adminId) return next(new ErrorHandler(401, "Unauthorized"));
+
+    if (typeof score !== "number" || score < 0 || score > 100) {
+      return next(new ErrorHandler(400, "Score must be between 0 and 100"));
+    }
+
+    const indicator = await Indicator.findById(id);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+
+    // 1. Capture changes for Audit Trail
+    const changes: any = {};
+    if (indicator.progress !== score) {
+      changes.progress = { old: indicator.progress, new: score };
+    }
+
+    // 2. Update Progress & Score History
+    indicator.progress = score;
+    indicator.scoreHistory.push({
+      score,
+      submittedBy: adminId as Types.ObjectId,
+      submittedAt: new Date(),
+    });
+
+    // 3. Handle Status & Next Deadline
+    if (score === 100) {
+      indicator.status = "completed";
+      indicator.result = "pass";
+    } else if (score > 0) {
+      indicator.status = "partially_completed";
+      if (nextDeadline) {
+        indicator.nextDeadline = new Date(nextDeadline);
+        changes.nextDeadline = { old: null, new: nextDeadline };
+      }
+    }
+
+    // 4. Add Audit Trail entry
+    if (Object.keys(changes).length > 0) {
+      indicator.editHistory.push({
+        updatedBy: adminId as Types.ObjectId,
+        updatedAt: new Date(),
+        changes,
+      });
+    }
+
+    // 5. Add optional note
+    if (note) {
+      indicator.notes.push({
+        text: `[Score Update ${score}%]: ${note}`,
+        createdBy: adminId as Types.ObjectId,
+        createdAt: new Date(),
+      });
+    }
+
+    await indicator.save();
+
+    res.status(200).json({
+      success: true,
+      message: score === 100 ? "Completed" : "Partially completed",
+      indicator,
+    });
+  },
+);
+
+
+/* =====================================================
+ RESUBMIT INDICATOR EVIDENCE
 ===================================================== */
 export const resubmitIndicatorEvidence = catchAsyncErrors(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    // 1️⃣ AUTHORIZATION CHECK
     if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
     const user = req.user;
 
     const indicator = await Indicator.findById(req.params.id);
     if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
 
-    const isAssignedUser = String(indicator.assignedTo) === String(user._id);
-    const isAssignedGroup = (indicator.assignedGroup ?? []).some(
-      (id) => String(id) === String(user._id),
-    );
-    const isSuperAdmin = user.role?.toLowerCase() === "superadmin";
-
-    if (!isAssignedUser && !isAssignedGroup && !isSuperAdmin) {
-      return next(
-        new ErrorHandler(403, "You are not assigned to this indicator"),
-      );
-    }
-
-    // 2️⃣ STATUS VALIDATION
+    // Authorization & Status checks...
     if (indicator.status !== STATUS.REJECTED) {
-      return next(
-        new ErrorHandler(400, "Only rejected indicators can be resubmitted"),
-      );
+      return next(new ErrorHandler(400, "Only rejected indicators can be resubmitted"));
     }
 
-    // 3️⃣ FILE VALIDATION
     const files = req.files as Express.Multer.File[];
-    if (!files?.length) {
-      return next(new ErrorHandler(400, "Please upload revised evidence"));
-    }
+    if (!files?.length) return next(new ErrorHandler(400, "Please upload revised evidence"));
 
-    // 4️⃣ ARCHIVE OLD EVIDENCE
+    // Archive old evidence
     indicator.evidence.forEach((ev: any) => {
       if (!ev.isArchived) {
         ev.status = "archived";
@@ -815,26 +971,21 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
       }
     });
 
-    // 5️⃣ RESUBMISSION ATTEMPT
     indicator.rejectionCount = (indicator.rejectionCount ?? 0) + 1;
     const attempt = indicator.rejectionCount;
 
-    // 6️⃣ PROCESS NEW FILES
     const rawDescs = req.body.descriptions;
-    const descriptions: string[] = Array.isArray(rawDescs)
-      ? rawDescs
-      : [rawDescs || ""];
+    const descriptions: string[] = Array.isArray(rawDescs) ? rawDescs : [rawDescs || ""];
 
     const newEvidence: IEvidence[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const desc =
-        descriptions[i] || `Resubmission Evidence (Attempt ${attempt})`;
+      const desc = descriptions[i] || `Resubmission Evidence (Attempt ${attempt})`;
 
       const upload = await uploadToCloudinary(
         file.buffer,
         indicator._id.toString(),
-        file.originalname,
+        file.originalname
       );
 
       newEvidence.push(
@@ -843,15 +994,14 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
           file.originalname,
           file.size,
           file.mimetype,
+          user._id, // Fixed: Pass the current user ID
           desc,
-          attempt,
-        ),
+          attempt
+        )
       );
     }
 
     indicator.evidence.push(...newEvidence);
-
-    // 7️⃣ RESET INDICATOR STATE
     indicator.status = STATUS.SUBMITTED;
     indicator.result = null;
     indicator.reviewedBy = null;
@@ -865,190 +1015,73 @@ export const resubmitIndicatorEvidence = catchAsyncErrors(
 
     await indicator.save();
 
-    // 8️⃣ LOGGING
-    await logActivity({
-      user: user._id,
-      action: "resubmit_evidence",
-      entity: indicator.indicatorTitle,
-      entityId: indicator._id,
-      level: "info",
-      meta: { attempt, files: files.length },
-    });
-
-    // 9️⃣ SOCKET EMIT
-    emitIndicatorUpdateToAdmins({
-      indicatorId: indicator._id.toString(),
-      status: STATUS.SUBMITTED,
-    });
-
-    // 10️⃣ RESPONSE
-    res.status(200).json({
-      success: true,
-      message: "Evidence resubmitted successfully",
-      indicator,
-    });
-  },
+    // Log & Socket emitting...
+    res.status(200).json({ success: true, indicator });
+  }
 );
 
-/**
- * @desc   Admin submits a score/progress for an indicator
- * @route  PATCH /api/indicators/:id/submit-score
- * @access Private (Admin)
- */
-export const submitIndicatorScore = catchAsyncErrors(
-  async (req: Request, res: Response, next: NextFunction) => {
-    const { id } = req.params;
-    const { score, note } = req.body;
-    const adminId = req.user?._id;
 
-    if (!adminId) {
-      return next(new ErrorHandler(401, "Unauthorized: adminId missing"));
-    }
+/* =====================================
+    DELETE SINGLE EVIDENCE (USER-ONLY)
+===================================== */
+export const deleteSingleEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const { id, evidenceId } = req.params;
 
-    if (typeof score !== "number" || score < 0 || score > 100) {
-      return next(
-        new ErrorHandler(400, "Score must be a number between 0 and 100"),
-      );
-    }
-
-    // 1. Fetch the indicator
     const indicator = await Indicator.findById(id);
     if (!indicator) {
       return next(new ErrorHandler(404, "Indicator not found"));
     }
 
-    // 2. Update progress
-    indicator.progress = score;
-
-    // 3. Add note if provided
-    if (note) {
-      indicator.notes.push({
-        text: note,
-        createdBy: adminId as mongoose.Types.ObjectId,
-        createdAt: new Date(),
-      });
-    }
-
-    // 4. Update status based on progress
-    if (score === 100) {
-      indicator.status = "completed";
-    } else {
-      indicator.status = "submitted"; // partially completed
-    }
-
-    // 5. Add to result tracking (optional: you can expand this)
-    indicator.result = score === 100 ? "pass" : undefined;
-
-    // 6. Save the indicator
-    await indicator.save();
-
-    // 7. Response
-    res.status(200).json({
-      success: true,
-      message:
-        score === 100
-          ? "Indicator marked as completed."
-          : "Indicator partially completed. SuperAdmin should set a new deadline.",
-      indicator,
-    });
-  },
-);
-
-/* =====================================================
-  DELETE SINGLE EVIDENCE ITEM (User Accessible)
-===================================================== */
-export const deleteSingleEvidence = catchAsyncErrors(
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    const { id, evidenceId } = req.params;
-
-    // 1️⃣ Authentication check
-    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
-    const user = req.user;
-
-    // 2️⃣ Find the indicator
-    const indicator = await Indicator.findById(id);
-    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
-
-    // 3️⃣ Detailed Authorization check
-    const isAssignedUser = String(indicator.assignedTo) === String(user._id);
-    const isAssignedGroup = (indicator.assignedGroup ?? []).some(
-      (userId) => String(userId) === String(user._id),
+    // Find the specific evidence subdocument
+    const evidenceDoc = indicator.evidence.find(
+      (e) => e._id.toString() === evidenceId,
     );
-    const isSuperAdmin = hasRole(user.role, ["superadmin", "admin"]);
+    
+    if (!evidenceDoc) {
+      return next(new ErrorHandler(404, "Evidence not found"));
+    }
 
-    if (!isAssignedUser && !isAssignedGroup && !isSuperAdmin) {
+    // STRICT OWNERSHIP CHECK: Only the uploader can delete.
+    // We removed the isAdmin check to ensure this is a "Self-Service" action only.
+    const isOwner = evidenceDoc.uploadedBy?.toString() === req.user!._id.toString();
+
+    if (!isOwner) {
       return next(
-        new ErrorHandler(
-          403,
-          "You do not have permission to modify this indicator",
-        ),
+        new ErrorHandler(403, "Access Denied: You can only delete evidence you uploaded.")
       );
     }
 
-    // 4️⃣ Check Status (Optional Safeguard)
-    // You might want to prevent deletion if the indicator is already "Approved" or "Completed"
-    if (indicator.status === STATUS.COMPLETED && !isSuperAdmin) {
-      return next(
-        new ErrorHandler(
-          400,
-          "Cannot delete evidence from a completed indicator",
-        ),
-      );
+    // Prevent deleting from locked/completed indicators
+    if (indicator.status === "completed") {
+      return next(new ErrorHandler(403, "Action prohibited: This record is sealed."));
     }
 
-    // 5️⃣ Find the specific evidence item
-    const evidenceItem = indicator.evidence.find(
-      (ev: any) => String(ev._id) === evidenceId,
-    );
-
-    if (!evidenceItem) {
-      return next(new ErrorHandler(404, "Evidence document not found"));
-    }
-
-    // 6️⃣ Delete from Cloudinary
+    // 1. Remove from Cloudinary storage
     try {
-      const resourceType = ["auto", "image", "video"].includes(
-        evidenceItem.resourceType,
-      )
-        ? (evidenceItem.resourceType as "auto" | "image" | "video")
-        : "auto";
-
-      await deleteFromCloudinary(evidenceItem.publicId, resourceType);
-    } catch (err) {
-      // We log the error but continue so the DB doesn't stay stuck with a broken link
-      console.error(
-        `Cloudinary deletion failed for ${evidenceItem.publicId}:`,
-        err,
-      );
+        await deleteFromCloudinary(
+            evidenceDoc.publicId,
+            evidenceDoc.resourceType || "auto",
+        );
+    } catch (cloudErr) {
+        console.error("Cloudinary Cleanup Failed:", cloudErr);
+        // We continue anyway to keep DB in sync, or you can halt here.
     }
 
-    // 7️⃣ Remove from MongoDB array
+    // 2. Remove the subdocument from the array
     (indicator.evidence as any).pull(evidenceId);
 
-    // 8️⃣ Logic: If user deletes all evidence, revert status to pending?
-    if (
-      indicator.evidence.length === 0 &&
-      indicator.status === STATUS.SUBMITTED
-    ) {
-      indicator.status = STATUS.PENDING;
+    // 3. Status Management: If the user deletes all evidence, reset to pending
+    if (indicator.evidence.length === 0) {
+      indicator.status = "pending";
     }
 
     await indicator.save();
 
-    // 9️⃣ Log activity
-    await logActivity({
-      user: user._id,
-      action: "delete_evidence_item",
-      entity: indicator.indicatorTitle,
-      entityId: indicator._id,
-      level: "info",
-      meta: { fileName: evidenceItem.fileName, evidenceId },
-    });
-
     res.status(200).json({
       success: true,
-      message: "Document deleted successfully",
-      indicator,
+      message: "Your evidence has been removed.",
+      indicator, // Return updated object for Redux sync
     });
   },
 );

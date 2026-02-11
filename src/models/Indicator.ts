@@ -1,41 +1,48 @@
 import mongoose, { Schema, Model, Types, HydratedDocument } from "mongoose";
 
 /* =====================================================
-   TYPES & INTERFACES
+   STATUS TYPES
 ===================================================== */
 
-export type IndicatorStatus =
-  | "pending"
-  | "submitted"
-  | "partially_completed" // NEW
-  | "approved"
-  | "completed"
-  | "rejected"
-  | "overdue";
+export const INDICATOR_STATUS = [
+  "pending",
+  "submitted",
+  "partially_completed",
+  "approved",
+  "completed",
+  "rejected",
+  "overdue",
+] as const;
 
-export type EvidenceStatus = "active" | "rejected" | "archived";
+export type IndicatorStatus = (typeof INDICATOR_STATUS)[number];
+
+export const EVIDENCE_STATUS = ["active", "rejected", "archived"] as const;
+
+export type EvidenceStatus = (typeof EVIDENCE_STATUS)[number];
+
+/* =====================================================
+   INTERFACES
+===================================================== */
 
 export interface IEvidence {
+  _id: Types.ObjectId;
   type: "file";
-
   fileName: string;
   fileSize: number;
   mimeType: string;
   description?: string;
-
   publicId: string;
   resourceType: "raw" | "image" | "video";
   cloudinaryType: "authenticated" | "upload";
   format: string;
   version: number;
-
-  /* === NEW FIELDS === */
   status: EvidenceStatus;
   isArchived: boolean;
   isResubmission: boolean;
   resubmissionAttempt: number;
   archivedAt?: Date;
   uploadedAt: Date;
+  uploadedBy: Types.ObjectId; 
 }
 
 export interface INote {
@@ -50,38 +57,36 @@ export interface IScoreHistory {
   submittedAt: Date;
 }
 
+export interface IEditHistory {
+  updatedBy: Types.ObjectId;
+  updatedAt: Date;
+  changes: Record<string, { old: any; new: any }>;
+}
+
 export interface IIndicator {
   category: Types.ObjectId;
   level2Category: Types.ObjectId;
   indicatorTitle: string;
   unitOfMeasure: string;
-
   assignedToType: "individual" | "group";
   assignedTo?: Types.ObjectId | null;
   assignedGroup?: Types.ObjectId[];
-
   startDate: Date;
   dueDate: Date;
-  nextDeadline?: Date; // NEW: for partial completion
-
+  nextDeadline?: Date;
   progress: number;
-
   notes: INote[];
   evidence: IEvidence[];
-
+  editHistory: IEditHistory[];
+  scoreHistory: IScoreHistory[];
   createdBy: Types.ObjectId;
   status: IndicatorStatus;
-
   rejectionCount: number;
   result?: "pass" | "fail" | null;
   reviewedBy?: Types.ObjectId | null;
   reviewedAt?: Date | null;
-
-  scoreHistory?: IScoreHistory[]; // NEW: track admin scores
-
   reportData?: Record<string, unknown>;
   calendarEvent?: Record<string, unknown> | null;
-
   createdAt: Date;
   updatedAt: Date;
 }
@@ -89,49 +94,49 @@ export interface IIndicator {
 export type IndicatorDocument = HydratedDocument<IIndicator>;
 
 /* =====================================================
-   SUB SCHEMAS
+   SUB-SCHEMAS
 ===================================================== */
 
 const evidenceSchema = new Schema<IEvidence>(
   {
     type: { type: String, enum: ["file"], required: true },
-
     fileName: { type: String, required: true },
     fileSize: { type: Number, required: true },
     mimeType: { type: String, required: true },
-    description: String,
-
+    description: { type: String, default: "" },
     publicId: { type: String, required: true },
-
     resourceType: {
       type: String,
       enum: ["raw", "image", "video"],
       required: true,
     },
-
     cloudinaryType: {
       type: String,
       enum: ["authenticated", "upload"],
       required: true,
     },
-
     format: { type: String, required: true },
     version: { type: Number, required: true },
-
-    /* === AUDIT / RESUBMISSION === */
     status: {
       type: String,
-      enum: ["active", "rejected", "archived"],
+      enum: EVIDENCE_STATUS,
       default: "active",
     },
-
     isArchived: { type: Boolean, default: false },
     isResubmission: { type: Boolean, default: false },
     resubmissionAttempt: { type: Number, default: 0 },
-    archivedAt: Date,
+    archivedAt: { type: Date },
     uploadedAt: { type: Date, default: Date.now },
+    uploadedBy: { 
+      type: Schema.Types.ObjectId, 
+      ref: "User", 
+      required: [true, "uploadedBy is required"] 
+    },
   },
-  { _id: false },
+  {
+    _id: true,
+    timestamps: false,
+  }
 );
 
 const noteSchema = new Schema<INote>(
@@ -140,7 +145,7 @@ const noteSchema = new Schema<INote>(
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     createdAt: { type: Date, default: Date.now },
   },
-  { _id: false },
+  { _id: false }
 );
 
 const scoreHistorySchema = new Schema<IScoreHistory>(
@@ -149,7 +154,16 @@ const scoreHistorySchema = new Schema<IScoreHistory>(
     submittedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     submittedAt: { type: Date, default: Date.now },
   },
-  { _id: false },
+  { _id: false }
+);
+
+const editHistorySchema = new Schema<IEditHistory>(
+  {
+    updatedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    updatedAt: { type: Date, default: Date.now },
+    changes: { type: Schema.Types.Mixed, required: true },
+  },
+  { _id: false }
 );
 
 /* =====================================================
@@ -159,27 +173,15 @@ const scoreHistorySchema = new Schema<IScoreHistory>(
 const indicatorSchema = new Schema<IIndicator>(
   {
     category: { type: Schema.Types.ObjectId, ref: "Category", required: true },
-    level2Category: {
-      type: Schema.Types.ObjectId,
-      ref: "Category",
-      required: true,
-    },
-
+    level2Category: { type: Schema.Types.ObjectId, ref: "Category", required: true },
     indicatorTitle: { type: String, required: true, trim: true },
     unitOfMeasure: { type: String, required: true },
-
-    assignedToType: {
-      type: String,
-      enum: ["individual", "group"],
-      required: true,
-    },
+    assignedToType: { type: String, enum: ["individual", "group"], required: true },
     assignedTo: { type: Schema.Types.ObjectId, ref: "User", default: null },
-    assignedGroup: { type: [Schema.Types.ObjectId], ref: "User", default: [] },
-
+    assignedGroup: [{ type: Schema.Types.ObjectId, ref: "User" }],
     startDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
-    nextDeadline: { type: Date }, // NEW
-
+    nextDeadline: { type: Date },
     progress: {
       type: Number,
       min: 0,
@@ -187,54 +189,61 @@ const indicatorSchema = new Schema<IIndicator>(
       default: 0,
       set: (v: number) => Math.round(v),
     },
-
     notes: { type: [noteSchema], default: [] },
     evidence: { type: [evidenceSchema], default: [] },
-
+    editHistory: { type: [editHistorySchema], default: [] },
+    scoreHistory: { type: [scoreHistorySchema], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
-
-    status: {
-      type: String,
-      enum: [
-        "pending",
-        "submitted",
-        "partially_completed", // NEW
-        "approved",
-        "completed",
-        "rejected",
-        "overdue",
-      ],
-      default: "pending",
-    },
-
+    status: { type: String, enum: INDICATOR_STATUS, default: "pending" },
     rejectionCount: { type: Number, default: 0 },
     result: { type: String, enum: ["pass", "fail"], default: null },
-
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     reviewedAt: { type: Date, default: null },
-
-    scoreHistory: { type: [scoreHistorySchema], default: [] }, // NEW
-
     reportData: { type: Schema.Types.Mixed, default: {} },
     calendarEvent: { type: Schema.Types.Mixed, default: null },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  }
 );
 
 /* =====================================================
-   ASSIGNMENT VALIDATOR
+   VALIDATORS & MIDDLEWARE
 ===================================================== */
 
-indicatorSchema.path("assignedGroup").validate(function () {
+// Assignee Validation
+indicatorSchema.path("assignedGroup").validate(function (this: IIndicator) {
   const hasIndividual = !!this.assignedTo;
-  const hasGroup =
-    Array.isArray(this.assignedGroup) && this.assignedGroup.length > 0;
-
+  const hasGroup = Array.isArray(this.assignedGroup) && this.assignedGroup.length > 0;
   return hasIndividual || hasGroup;
 }, "At least one assignee (individual or group) is required");
 
+/**
+ * FIX: Async Pre-save middleware
+ * Automatically injects uploadedBy if it's missing to prevent validation errors.
+ */
+indicatorSchema.pre("save", async function () {
+  if (this.evidence && this.evidence.length > 0) {
+    for (const ev of this.evidence) {
+      if (!ev.uploadedBy) {
+        // Fallback: Use assignedTo if available, otherwise use creator
+        ev.uploadedBy = (this.assignedTo as Types.ObjectId) || this.createdBy;
+      }
+    }
+  }
+});
+
 /* =====================================================
-   MODEL
+   INDEXES
+===================================================== */
+
+indicatorSchema.index({ assignedTo: 1 });
+indicatorSchema.index({ assignedGroup: 1 });
+indicatorSchema.index({ status: 1 });
+indicatorSchema.index({ dueDate: 1 });
+
+/* =====================================================
+   MODEL EXPORT
 ===================================================== */
 
 export const Indicator: Model<IIndicator> =

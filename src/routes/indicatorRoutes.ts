@@ -16,6 +16,7 @@ import {
   resubmitIndicatorEvidence,
   submitIndicatorScore,
   deleteSingleEvidence,
+  updateEvidenceDescription,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -23,131 +24,120 @@ import { upload } from "../middleware/multer";
 const router = express.Router();
 
 /* ================================================
-   SUPERADMIN: CREATE INDICATOR
-================================================ */
-router.post(
-  "/create",
-  isAuthenticated,
-  isAuthorized("superadmin"), // matches your controller role
-  createIndicator,
-);
+   1. STATIC ROUTES (Must come before /:id)
+   ================================================ */
 
-/* ================================================
-   SUPERADMIN / ADMIN: UPDATE INDICATOR
-================================================ */
-router.put(
-  "/update/:id",
-  isAuthenticated,
-  isAuthorized("superadmin", "admin"),
-  updateIndicator,
-);
-
-/* ================================================
-   USER: SUBMIT EVIDENCE (multiple files)
-================================================ */
-router.post(
-  "/submit/:id",
-  isAuthenticated,
-  // Use upload.array to target the "files" field specifically.
-  // This handles the binary files and ignores the text "descriptions".
-  upload.array("files", 100),
-  submitIndicatorEvidence,
-);
+router.get("/my", isAuthenticated, getUserIndicators);
 
 router.get(
   "/submitted",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  getSubmittedIndicators,
+  getSubmittedIndicators
 );
 
-/* ================================================
-   USER: GET MY ASSIGNED INDICATORS
-================================================ */
-router.get("/my", isAuthenticated, getUserIndicators);
-
-/* ================================================
-   GET SINGLE INDICATOR
-================================================ */
-router.get("/get/:id", isAuthenticated, getIndicatorById);
-
-/* ================================================
-   GET ALL INDICATORS (ADMIN ONLY)
-================================================ */
 router.get(
   "/all",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  getAllIndicators,
+  getAllIndicators
 );
 
 /* ================================================
-   DELETE INDICATOR
-================================================ */
+   2. CORE CRUD & ACTION ROUTES
+   ================================================ */
+
+router.post(
+  "/create",
+  isAuthenticated,
+  isAuthorized("superadmin"),
+  createIndicator
+);
+
+router.get("/get/:id", isAuthenticated, getIndicatorById);
+
+router.put(
+  "/update/:id",
+  isAuthenticated,
+  isAuthorized("superadmin", "admin"),
+  updateIndicator
+);
+
 router.delete(
   "/delete/:id",
   isAuthenticated,
   isAuthorized("superadmin"),
-  deleteIndicator,
+  deleteIndicator
 );
 
 /* ================================================
-   APPROVE / REJECT INDICATOR
-================================================ */
+   3. EVIDENCE & SUBMISSION MANAGEMENT
+   ================================================ */
+
+// Standard User Submission
+router.post(
+  "/submit/:id",
+  isAuthenticated,
+  upload.array("files", 100),
+  submitIndicatorEvidence
+);
+
+// User Resubmission (Post-Rejection)
+router.post(
+  "/resubmit/:id",
+  isAuthenticated,
+  upload.array("files", 100), 
+  resubmitIndicatorEvidence
+);
+
+// Admin Direct Upload (Auto-approve)
+router.post(
+  "/:id/admin-submit",
+  isAuthenticated,
+  isAuthorized("admin", "superadmin"),
+  upload.array("files", 10),
+  adminSubmitIndicatorEvidence
+);
+
+
+// Delete single evidence (User-only ownership verified in controller)
+router.delete(
+  "/:id/evidence/:evidenceId",
+  isAuthenticated,
+  deleteSingleEvidence
+);
+
+// Update evidence description
+router.patch(
+  "/:id/evidence/:evidenceId/description",
+  isAuthenticated,
+  isAuthorized("admin", "superadmin"),
+  updateEvidenceDescription
+);
+
+/* ================================================
+   4. REVIEW & SCORING
+   ================================================ */
+
 router.put(
   "/approve/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  approveIndicator,
+  approveIndicator
 );
 
 router.put(
   "/reject/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  rejectIndicator,
+  rejectIndicator
 );
 
 router.patch(
   "/:id/progress",
   isAuthenticated,
   isAuthorized("admin", "superadmin"),
-  updateIndicatorProgress,
-);
-
-
-/**
- * @route   POST /api/v1/indicators/:id/admin-submit
- * @desc    Admin uploads evidence and auto-approves an indicator
- * @access  Private (Admin, SuperAdmin)
- */
-router.post(
-  "/:id/admin-submit",
-  isAuthenticated,
-  isAuthorized("admin", "superadmin"),
-  upload.array("files", 10), // Limit to 10 files per request
-  adminSubmitIndicatorEvidence,
-);
-
-/* ================================================
-   PROXY: STREAM EVIDENCE (AUTHENTICATED)
-   Used for previewing PDFs & images
-================================================ */
-router.get(
-  "/:indicatorId/proxy-evidence",
-  isAuthenticated,
-  proxyEvidenceStream
-);
-
-
-
-//RESUBMISSION ROUTE
-
-router.post(
-  "/resubmit/:id",
-  isAuthenticated,
-  upload.array("files", 100), 
-  resubmitIndicatorEvidence
+  updateIndicatorProgress
 );
 
 router.post(
@@ -157,6 +147,14 @@ router.post(
   submitIndicatorScore
 );
 
-router.delete("/:id/evidence/:evidenceId", isAuthenticated, deleteSingleEvidence);
+/* ================================================
+   5. UTILITY / PROXY
+   ================================================ */
+
+router.get(
+  "/:id/proxy-evidence", // Changed :indicatorId to :id for consistency
+  isAuthenticated,
+  proxyEvidenceStream
+);
 
 export default router;
