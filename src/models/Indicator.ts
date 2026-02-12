@@ -1,7 +1,7 @@
 import mongoose, { Schema, Model, Types, HydratedDocument } from "mongoose";
 
 /* =====================================================
-   STATUS TYPES
+   TYPES & CONSTANTS
 ===================================================== */
 
 export const INDICATOR_STATUS = [
@@ -42,7 +42,7 @@ export interface IEvidence {
   resubmissionAttempt: number;
   archivedAt?: Date;
   uploadedAt: Date;
-  uploadedBy: Types.ObjectId; 
+  uploadedBy?: Types.ObjectId;
 }
 
 export interface INote {
@@ -105,38 +105,19 @@ const evidenceSchema = new Schema<IEvidence>(
     mimeType: { type: String, required: true },
     description: { type: String, default: "" },
     publicId: { type: String, required: true },
-    resourceType: {
-      type: String,
-      enum: ["raw", "image", "video"],
-      required: true,
-    },
-    cloudinaryType: {
-      type: String,
-      enum: ["authenticated", "upload"],
-      required: true,
-    },
+    resourceType: { type: String, enum: ["raw", "image", "video"], required: true },
+    cloudinaryType: { type: String, enum: ["authenticated", "upload"], required: true },
     format: { type: String, required: true },
     version: { type: Number, required: true },
-    status: {
-      type: String,
-      enum: EVIDENCE_STATUS,
-      default: "active",
-    },
+    status: { type: String, enum: EVIDENCE_STATUS, default: "active" },
     isArchived: { type: Boolean, default: false },
     isResubmission: { type: Boolean, default: false },
     resubmissionAttempt: { type: Number, default: 0 },
     archivedAt: { type: Date },
     uploadedAt: { type: Date, default: Date.now },
-    uploadedBy: { 
-      type: Schema.Types.ObjectId, 
-      ref: "User", 
-      required: [true, "uploadedBy is required"] 
-    },
+    uploadedBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
-  {
-    _id: true,
-    timestamps: false,
-  }
+  { _id: true, timestamps: false }
 );
 
 const noteSchema = new Schema<INote>(
@@ -189,11 +170,11 @@ const indicatorSchema = new Schema<IIndicator>(
       default: 0,
       set: (v: number) => Math.round(v),
     },
-    notes: { type: [noteSchema], default: [] },
-    evidence: { type: [evidenceSchema], default: [] },
-    editHistory: { type: [editHistorySchema], default: [] },
-    scoreHistory: { type: [scoreHistorySchema], default: [] },
-    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    notes: [noteSchema],
+    evidence: [evidenceSchema],
+    editHistory: [editHistorySchema],
+    scoreHistory: [scoreHistorySchema],
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     status: { type: String, enum: INDICATOR_STATUS, default: "pending" },
     rejectionCount: { type: Number, default: 0 },
     result: { type: String, enum: ["pass", "fail"], default: null },
@@ -202,13 +183,11 @@ const indicatorSchema = new Schema<IIndicator>(
     reportData: { type: Schema.Types.Mixed, default: {} },
     calendarEvent: { type: Schema.Types.Mixed, default: null },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 /* =====================================================
-   VALIDATORS & MIDDLEWARE
+   MIDDLEWARE & VALIDATORS
 ===================================================== */
 
 // Assignee Validation
@@ -219,15 +198,18 @@ indicatorSchema.path("assignedGroup").validate(function (this: IIndicator) {
 }, "At least one assignee (individual or group) is required");
 
 /**
- * FIX: Async Pre-save middleware
- * Automatically injects uploadedBy if it's missing to prevent validation errors.
+ * ASYNC PRE-SAVE HOOK
+ * Replaces the need for next() by returning a Promise (async).
  */
 indicatorSchema.pre("save", async function () {
-  if (this.evidence && this.evidence.length > 0) {
+  if (this.evidence?.length > 0) {
     for (const ev of this.evidence) {
       if (!ev.uploadedBy) {
-        // Fallback: Use assignedTo if available, otherwise use creator
-        ev.uploadedBy = (this.assignedTo as Types.ObjectId) || this.createdBy;
+        // Fallback hierarchy: Assignee -> Creator
+        const fallbackId = (this.assignedTo as Types.ObjectId) || this.createdBy;
+        if (fallbackId) {
+          ev.uploadedBy = fallbackId;
+        }
       }
     }
   }
