@@ -17,6 +17,7 @@ import {
   submitIndicatorScore,
   deleteSingleEvidence,
   updateEvidenceDescription,
+  remindOverdueIndicators,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -155,6 +156,17 @@ router.get(
   "/:id/proxy-evidence", // Changed :indicatorId to :id for consistency
   isAuthenticated,
   proxyEvidenceStream
+);
+
+/**
+ * @route   POST /api/v1/indicators/admin/remind-overdue
+ * @desc    Broadcast reminder emails to all users with overdue tasks
+ * @access  Private (Superadmin only)
+ */
+router.post("/remind-overdue",
+  isAuthenticated, 
+  isAuthorized("superadmin"), 
+  remindOverdueIndicators
 );
 
 export default router;

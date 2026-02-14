@@ -22,6 +22,7 @@ import {
   indicatorApprovedTemplate,
   indicatorCreatedTemplate,
   indicatorRejectedTemplate,
+  overdueReminderTemplate,
 } from "../utils/mailTemplates";
 import { env } from "../config/env";
 import {
@@ -924,6 +925,135 @@ export const submitIndicatorScore = catchAsyncErrors(
       success: true,
       message: score === 100 ? "Completed" : "Partially completed",
       indicator,
+    });
+  },
+);
+
+/* =====================================================
+   REMIND OVERDUE INDICATORS (SUPERADMIN)
+   Handles both Global Broadcasts and Single Nudges
+===================================================== */
+export const remindOverdueIndicators = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // 1. Authorization Check
+    if (!req.user || !hasRole(req.user.role, ["superadmin"])) {
+      return next(
+        new ErrorHandler(403, "Access restricted to Super Administrators"),
+      );
+    }
+
+    const { indicatorId } = req.body; // Incoming ID for single nudges
+    const now = new Date();
+
+    // 2. Query Logic: Single vs. Global
+    let query: any = {
+      status: { $ne: STATUS.COMPLETED },
+      dueDate: { $lt: now },
+    };
+
+    if (indicatorId) {
+      query._id = indicatorId;
+    }
+
+    const targetIndicators = await Indicator.find(query).populate(
+      "assignedTo assignedGroup",
+      "email name",
+    );
+
+    if (!targetIndicators.length) {
+      return res.status(200).json({
+        success: true,
+        message: indicatorId
+          ? "This specific indicator is either not overdue or already completed."
+          : "No overdue indicators found to remind.",
+      });
+    }
+
+    // 3. Map recipients (Support for multiple tasks per user during broadcast)
+    const userTaskMap = new Map<
+      string,
+      { email: string; name: string; tasks: any[] }
+    >();
+
+    targetIndicators.forEach((indicator) => {
+      const taskRecipients: any[] = [];
+      if (indicator.assignedTo) taskRecipients.push(indicator.assignedTo);
+      if (Array.isArray(indicator.assignedGroup)) {
+        indicator.assignedGroup.forEach((u) => taskRecipients.push(u));
+      }
+
+      taskRecipients.forEach((user) => {
+        if (user && user.email) {
+          const userId = user._id.toString();
+          if (!userTaskMap.has(userId)) {
+            userTaskMap.set(userId, {
+              email: user.email,
+              name: user.name,
+              tasks: [],
+            });
+          }
+          userTaskMap.get(userId)?.tasks.push(indicator);
+        }
+      });
+    });
+
+    // 4. Send Supportive Emails
+    const emailPromises = Array.from(userTaskMap.values()).map(
+      ({ email, name, tasks }) => {
+        const primaryTask = tasks[0];
+        const taskCount = tasks.length;
+
+        const specificIndicatorUrl = `${env.FRONTEND_URL}/user/indicators/${primaryTask._id}`;
+
+        // Personalized Email Template
+        const mailBody = overdueReminderTemplate({
+          userName: name, // Passing user name for personalized greeting
+          indicatorTitle:
+            taskCount > 1
+              ? `${primaryTask.indicatorTitle} (and ${taskCount - 1} other tasks)`
+              : primaryTask.indicatorTitle,
+          dueDate: primaryTask.dueDate,
+          appUrl:
+            taskCount > 1
+              ? `${env.FRONTEND_URL}/user/dashboard`
+              : specificIndicatorUrl,
+        });
+
+        return sendMail({
+          to: email,
+          subject: mailBody.subject,
+          html: mailBody.html,
+        });
+      },
+    );
+
+    await Promise.all(emailPromises);
+
+    // 5. Logging
+    await logActivity({
+      user: req.user._id,
+      action: indicatorId
+        ? "single_overdue_nudge"
+        : "broadcast_overdue_reminders",
+      entity: indicatorId ? "Indicator" : "Mass Email",
+      level: "info",
+      meta: {
+        emailsSent: emailPromises.length,
+        indicatorId: indicatorId || "all",
+        indicatorsImpacted: targetIndicators.length,
+      },
+    });
+
+    // 6. Send Response
+    const recipientList = Array.from(userTaskMap.values());
+    const firstRecipientName =
+      recipientList.length > 0 ? recipientList[0].name : "assigned personnel";
+
+    res.status(200).json({
+      success: true,
+      message: indicatorId
+        ? `Nudge email sent successfully to ${firstRecipientName}.`
+        : `Successfully broadcasted ${emailPromises.length} supportive reminder emails.`,
     });
   },
 );

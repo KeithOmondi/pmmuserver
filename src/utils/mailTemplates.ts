@@ -2,16 +2,17 @@
     MAIL CONFIG & UTILS
 ============================================================ */
 
-const LOGO_URL = "https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png";
+const LOGO_URL =
+  "https://res.cloudinary.com/drls2cpnu/image/upload/v1765116373/The_Jud_rmzqa7.png";
 
 const COLORS = {
   PRIMARY: "#1a3a32", // Judicial Deep Green
-  ACCENT: "#c2a336",  // Judicial Gold
+  ACCENT: "#c2a336", // Judicial Gold
   BG: "#f8f9fa",
   TEXT: "#333333",
   SLATE: "#64748b",
-  DANGER: "#be123c",  // Rejection Red
-  SUCCESS: "#06402B"
+  DANGER: "#be123c", // Rejection Red
+  SUCCESS: "#06402B",
 };
 
 interface BaseMailTemplate {
@@ -131,12 +132,10 @@ export const indicatorRejectedTemplate = ({
   };
 };
 
-
 export interface IndicatorApprovedParams {
   indicatorTitle: string;
   appUrl: string;
 }
-
 
 export const indicatorApprovedTemplate = ({
   indicatorTitle,
@@ -245,5 +244,78 @@ export const otpLoginTemplate = ({
       </div>
     `,
     text: `Your login OTP is: ${otp}`,
+  };
+};
+
+/* ============================================================
+    OVERDUE REMINDER (NUDGE)
+============================================================ */
+
+interface OverdueReminderParams {
+  indicatorTitle: string;
+  dueDate: Date;
+  appUrl: string;
+}
+
+export const overdueReminderTemplate = ({
+  userName,
+  indicatorTitle,
+  dueDate,
+  appUrl,
+}: OverdueReminderParams & { userName: string }): BaseMailTemplate => {
+  const formattedDate = new Date(dueDate).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  return {
+    subject: `Overdue Task: ${indicatorTitle}`,
+
+    html: `
+      <div style="background-color: #F8FAFC; padding: 40px 20px; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); border: 1px solid #e2e8f0;">
+          
+          <div style="background-color: #1E3A2B; padding: 30px; text-align: center;">
+            <img src="${LOGO_URL}" alt="Judiciary Logo" style="height: 60px; margin-bottom: 10px;" />
+            <h2 style="color: white; margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0.5px;">Office of the Registrar High Court</h2>
+          </div>
+
+          <div style="padding: 40px; color: #1e293b; line-height: 1.6;">
+            <p style="margin-top: 0; font-size: 16px;">Dear <strong>${userName}</strong>,</p>
+            
+            <p style="font-size: 15px;">
+              I note that the following task is overdue:
+            </p>
+            
+            <div style="background: #f1f5f9; padding: 20px; border-radius: 12px; margin: 20px 0; border-left: 4px solid #EFBF04;">
+              <p style="margin: 0; font-weight: 700; color: #1E3A2B; font-size: 16px;">${indicatorTitle}</p>
+              <p style="margin: 5px 0 0 0; font-size: 13px; color: #64748b;">Deadline: ${formattedDate}</p>
+            </div>
+
+            <p style="font-size: 15px;">
+              Kindly let me know the challenges you are facing in completing the task and any support you may need.
+            </p>
+
+            <div style="text-align: center; margin-top: 30px;">
+              <a href="${appUrl}" style="background-color: #1E3A2B; color: #EFBF04; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 14px; display: inline-block;">
+                VIEW TASK DETAILS
+              </a>
+            </div>
+          </div>
+
+          <div style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e2e8f0;">
+            <p style="font-size: 11px; color: #94a3b8; margin: 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">
+              REGISTRAR HIGH COURT
+            </p>
+            <p style="font-size: 10px; color: #cbd5e1; margin: 5px 0 0 0;">
+              Performance Management System &copy; ${new Date().getFullYear()}
+            </p>
+          </div>
+        </div>
+      </div>
+    `,
+
+    text: `Dear ${userName}, I note that the task "${indicatorTitle}" is overdue. Kindly let me know the challenges you are facing in completing the task and any support you may need. RHC - OFFICE OF THE REGISTRAR HIGH COURT`,
   };
 };
