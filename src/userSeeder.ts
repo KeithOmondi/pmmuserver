@@ -13,7 +13,7 @@ const staff = [
   {
     name: "Lavenda Awuor Ochieng",
     pjNumber: "74693",
-    email: "lavenda.ochieng@court.go.ke",
+    email: "kd.omondi1@gmail.com",
   },
   {
     name: "Hon. Jane Kemunto Ocharo",

@@ -13,16 +13,19 @@ export const INDICATOR_STATUS = [
   "rejected",
   "overdue",
 ] as const;
-
 export type IndicatorStatus = (typeof INDICATOR_STATUS)[number];
 
 export const EVIDENCE_STATUS = ["active", "rejected", "archived"] as const;
-
 export type EvidenceStatus = (typeof EVIDENCE_STATUS)[number];
 
 /* =====================================================
    INTERFACES
 ===================================================== */
+
+interface IAuditFields {
+  createdBy: Types.ObjectId;
+  createdAt: Date;
+}
 
 export interface IEvidence {
   _id: Types.ObjectId;
@@ -45,10 +48,8 @@ export interface IEvidence {
   uploadedBy?: Types.ObjectId;
 }
 
-export interface INote {
+export interface INote extends IAuditFields {
   text: string;
-  createdBy: Types.ObjectId;
-  createdAt: Date;
 }
 
 export interface IScoreHistory {
@@ -105,19 +106,27 @@ const evidenceSchema = new Schema<IEvidence>(
     mimeType: { type: String, required: true },
     description: { type: String, default: "" },
     publicId: { type: String, required: true },
-    resourceType: { type: String, enum: ["raw", "image", "video"], required: true },
-    cloudinaryType: { type: String, enum: ["authenticated", "upload"], required: true },
+    resourceType: {
+      type: String,
+      enum: ["raw", "image", "video"],
+      required: true,
+    },
+    cloudinaryType: {
+      type: String,
+      enum: ["authenticated", "upload"],
+      required: true,
+    },
     format: { type: String, required: true },
     version: { type: Number, required: true },
     status: { type: String, enum: EVIDENCE_STATUS, default: "active" },
     isArchived: { type: Boolean, default: false },
     isResubmission: { type: Boolean, default: false },
     resubmissionAttempt: { type: Number, default: 0 },
-    archivedAt: { type: Date },
+    archivedAt: Date,
     uploadedAt: { type: Date, default: Date.now },
     uploadedBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
-  { _id: true, timestamps: false }
+  { _id: true },
 );
 
 const noteSchema = new Schema<INote>(
@@ -126,25 +135,7 @@ const noteSchema = new Schema<INote>(
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     createdAt: { type: Date, default: Date.now },
   },
-  { _id: false }
-);
-
-const scoreHistorySchema = new Schema<IScoreHistory>(
-  {
-    score: { type: Number, required: true, min: 0, max: 100 },
-    submittedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    submittedAt: { type: Date, default: Date.now },
-  },
-  { _id: false }
-);
-
-const editHistorySchema = new Schema<IEditHistory>(
-  {
-    updatedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    updatedAt: { type: Date, default: Date.now },
-    changes: { type: Schema.Types.Mixed, required: true },
-  },
-  { _id: false }
+  { _id: false },
 );
 
 /* =====================================================
@@ -154,15 +145,23 @@ const editHistorySchema = new Schema<IEditHistory>(
 const indicatorSchema = new Schema<IIndicator>(
   {
     category: { type: Schema.Types.ObjectId, ref: "Category", required: true },
-    level2Category: { type: Schema.Types.ObjectId, ref: "Category", required: true },
+    level2Category: {
+      type: Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
+    },
     indicatorTitle: { type: String, required: true, trim: true },
     unitOfMeasure: { type: String, required: true },
-    assignedToType: { type: String, enum: ["individual", "group"], required: true },
+    assignedToType: {
+      type: String,
+      enum: ["individual", "group"],
+      required: true,
+    },
     assignedTo: { type: Schema.Types.ObjectId, ref: "User", default: null },
     assignedGroup: [{ type: Schema.Types.ObjectId, ref: "User" }],
     startDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
-    nextDeadline: { type: Date },
+    nextDeadline: Date,
     progress: {
       type: Number,
       min: 0,
@@ -172,8 +171,34 @@ const indicatorSchema = new Schema<IIndicator>(
     },
     notes: [noteSchema],
     evidence: [evidenceSchema],
-    editHistory: [editHistorySchema],
-    scoreHistory: [scoreHistorySchema],
+    editHistory: [
+      new Schema(
+        {
+          updatedBy: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+            required: true,
+          },
+          updatedAt: { type: Date, default: Date.now },
+          changes: { type: Schema.Types.Mixed, required: true },
+        },
+        { _id: false },
+      ),
+    ],
+    scoreHistory: [
+      new Schema(
+        {
+          score: { type: Number, required: true, min: 0, max: 100 },
+          submittedBy: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+            required: true,
+          },
+          submittedAt: { type: Date, default: Date.now },
+        },
+        { _id: false },
+      ),
+    ],
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     status: { type: String, enum: INDICATOR_STATUS, default: "pending" },
     rejectionCount: { type: Number, default: 0 },
@@ -183,50 +208,29 @@ const indicatorSchema = new Schema<IIndicator>(
     reportData: { type: Schema.Types.Mixed, default: {} },
     calendarEvent: { type: Schema.Types.Mixed, default: null },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 /* =====================================================
-   MIDDLEWARE & VALIDATORS
+   INDEXES & MIDDLEWARE
 ===================================================== */
 
-// Assignee Validation
-indicatorSchema.path("assignedGroup").validate(function (this: IIndicator) {
-  const hasIndividual = !!this.assignedTo;
-  const hasGroup = Array.isArray(this.assignedGroup) && this.assignedGroup.length > 0;
-  return hasIndividual || hasGroup;
-}, "At least one assignee (individual or group) is required");
+indicatorSchema.index({ status: 1, dueDate: 1 });
 
 /**
- * ASYNC PRE-SAVE HOOK
- * Replaces the need for next() by returning a Promise (async).
+ * Updated Middleware:
+ * Using an async function without the 'next' parameter.
+ * Mongoose will automatically wait for the returned promise to resolve.
  */
 indicatorSchema.pre("save", async function () {
-  if (this.evidence?.length > 0) {
-    for (const ev of this.evidence) {
+  if (this.isModified("evidence")) {
+    this.evidence.forEach((ev) => {
       if (!ev.uploadedBy) {
-        // Fallback hierarchy: Assignee -> Creator
-        const fallbackId = (this.assignedTo as Types.ObjectId) || this.createdBy;
-        if (fallbackId) {
-          ev.uploadedBy = fallbackId;
-        }
+        ev.uploadedBy = (this.assignedTo as Types.ObjectId) || this.createdBy;
       }
-    }
+    });
   }
 });
-
-/* =====================================================
-   INDEXES
-===================================================== */
-
-indicatorSchema.index({ assignedTo: 1 });
-indicatorSchema.index({ assignedGroup: 1 });
-indicatorSchema.index({ status: 1 });
-indicatorSchema.index({ dueDate: 1 });
-
-/* =====================================================
-   MODEL EXPORT
-===================================================== */
 
 export const Indicator: Model<IIndicator> =
   mongoose.models.Indicator ||
