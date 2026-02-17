@@ -125,7 +125,13 @@ const categories: SeedCategory[] = [
   },
   {
     code: "A.1.4.e",
-    title: "Facilitate service weeks and RRIs",
+    title: "Facilitate service week",
+    parentCode: "A.1.4",
+    level: 3,
+  },
+   {
+    code: "A.1.4.f",
+    title: "RRI",
     parentCode: "A.1.4",
     level: 3,
   },
@@ -631,7 +637,7 @@ const categories: SeedCategory[] = [
 ];
 
 // ============================
-// Seeder Logic (remains unchanged)
+// Updated Seeder Logic (Sync & Audit Mode)
 // ============================
 (async (): Promise<void> => {
   try {
@@ -642,33 +648,72 @@ const categories: SeedCategory[] = [
     await mongoose.connect(env.MONGO_URI);
     console.log("✅ MongoDB connected");
 
-    await Category.deleteMany({});
-
     const createdCategories: CreatedCategoryMap = {};
+    let updatedCount = 0;
+    let createdCount = 0;
 
     for (const cat of categories) {
-      const parentId = cat.parentCode
-        ? createdCategories[cat.parentCode]?._id
-        : undefined;
+      let parentId: Types.ObjectId | undefined = undefined;
 
-      const newCategory = new Category({
-        code: cat.code,
-        title: cat.title,
-        level: cat.level,
-        parent: parentId,
-      });
+      // 1. Resolve Parent ID
+      if (cat.parentCode) {
+        if (createdCategories[cat.parentCode]) {
+          parentId = createdCategories[cat.parentCode]._id;
+        } else {
+          // Fallback: Check DB if not in memory (Crucial for unbundling)
+          const existingParent = await Category.findOne({ code: cat.parentCode });
+          if (existingParent) {
+            parentId = existingParent._id as Types.ObjectId;
+          }
+        }
+      }
 
-      await newCategory.save();
+      // 2. Perform Upsert with Raw Result to track changes
+      const result = await Category.findOneAndUpdate(
+        { code: cat.code },
+        {
+          $set: {
+            title: cat.title,
+            level: cat.level,
+            parent: parentId,
+          },
+        },
+        { 
+          upsert: true, 
+          new: true, 
+          includeResultMetadata: true // Allows us to see if it was an upsert or update
+        }
+      );
 
-      createdCategories[cat.code] = {
-        _id: newCategory._id,
-      };
+      const doc = result.value;
+      const isNew = !result.lastErrorObject?.updatedExisting;
+
+      if (isNew) {
+        createdCount++;
+        console.log(`[NEW] 🌱 ${cat.code}`);
+      } else {
+        updatedCount++;
+        // Log specific child items you're worried about to verify they "pick up"
+        if (cat.code.startsWith("A.1.4")) {
+           console.log(`[UPDATED] 🔄 ${cat.code} -> Parent: ${cat.parentCode} (${parentId || 'None'})`);
+        }
+      }
+
+      // 3. Store in map for next iterations
+      if (doc) {
+        createdCategories[cat.code] = { _id: doc._id as Types.ObjectId };
+      }
     }
 
-    console.log("✅ Categories seeded successfully!");
+    console.log("\n--- Sync Report ---");
+    console.log(`✅ Total Processed: ${categories.length}`);
+    console.log(`✨ Newly Created:  ${createdCount}`);
+    console.log(`🔄 Updated/Synced: ${updatedCount}`);
+    console.log("-------------------\n");
+
     process.exit(0);
   } catch (error) {
-    console.error("❌ Error seeding categories:", error);
+    console.error("❌ Error syncing categories:", error);
     process.exit(1);
   }
 })();

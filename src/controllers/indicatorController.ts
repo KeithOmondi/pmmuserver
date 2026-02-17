@@ -614,45 +614,61 @@ export const getUserIndicators = catchAsyncErrors(
 ===================================================== */
 export const proxyEvidenceStream = catchAsyncErrors(
   async (req: Request, res: Response, next: NextFunction) => {
-    const { indicatorId } = req.params;
     const publicId = decodeURIComponent(req.query.publicId as string);
 
     try {
-      const hasExtension = publicId.toLowerCase().endsWith(".pdf");
-      const resourceType = hasExtension ? "raw" : "image";
-      const format = "pdf";
+      if (!publicId) {
+        return next(new ErrorHandler(400, "Missing publicId"));
+      }
 
+      // 🔎 Detect file type
+      const isPdf = publicId.toLowerCase().endsWith(".pdf");
+
+      const resourceType = isPdf ? "raw" : "image";
+      const format = isPdf ? "pdf" : ""; // must always be a string
+
+      // 🔐 Generate signed URL
       const signedUrl = cloudinary.utils.private_download_url(
         publicId,
         format,
         {
           resource_type: resourceType,
           type: "authenticated",
-          expires_at: Math.floor(Date.now() / 1000) + 3600,
-        },
+          expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour expiry
+        }
       );
 
+      // 🌐 Fetch file stream from Cloudinary
       const response = await axios({
         method: "get",
         url: signedUrl,
         responseType: "stream",
       });
 
-      res.setHeader("Content-Type", "application/pdf");
+      // 📦 Set correct content type dynamically
+      const contentType =
+        response.headers["content-type"] ||
+        (isPdf ? "application/pdf" : "image/jpeg");
+
+      res.setHeader("Content-Type", contentType);
       res.setHeader("Content-Disposition", "inline");
+
+      // Allow iframe embedding from your frontend
       res.removeHeader("X-Frame-Options");
       res.setHeader(
         "Content-Security-Policy",
-        `frame-ancestors 'self' ${env.FRONTEND_URL}`,
+        `frame-ancestors 'self' ${env.FRONTEND_URL}`
       );
 
+      // 🚀 Pipe stream to client
       response.data.pipe(res);
     } catch (err: any) {
       console.error("[PROXY ERROR]:", err.response?.data || err.message);
       return next(new ErrorHandler(500, "Failed to stream document"));
     }
-  },
+  }
 );
+
 
 /* =====================================================
   DELETE SINGLE EVIDENCE (USER ONLY)
