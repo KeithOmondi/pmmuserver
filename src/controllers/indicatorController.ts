@@ -1057,3 +1057,115 @@ export const remindOverdueIndicators = catchAsyncErrors(
     });
   },
 );
+
+
+/* =====================================================
+  REJECT SINGLE EVIDENCE (ADMIN / SUPERADMIN)
+===================================================== */
+export const rejectSingleEvidence = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const { id, evidenceId } = req.params;
+    const { reason } = req.body;
+
+    if (!req.user || !hasRole(req.user.role, ["admin", "superadmin"])) {
+      return next(new ErrorHandler(403, "Only administrators can reject evidence"));
+    }
+
+    if (!reason || reason.trim().length === 0) {
+      return next(new ErrorHandler(400, "A reason is required to reject a document."));
+    }
+
+    const indicator = await Indicator.findById(id);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+
+    // Find the specific document in the array
+    const evidenceArray = indicator.evidence as mongoose.Types.DocumentArray<IEvidence>;
+    const doc = evidenceArray.id(evidenceId);
+
+    if (!doc) return next(new ErrorHandler(404, "Document not found in this indicator"));
+
+    // Update the document status
+    const oldStatus = doc.status;
+    doc.status = "rejected";
+    (doc as any).rejectionReason = reason.trim(); // Ensure this is in your Schema
+
+    // If any document is rejected, we typically move the whole indicator 
+    // to a "revisions_required" or "rejected" status so the user sees it.
+    indicator.status = STATUS.REJECTED; 
+    
+    // Add to indicator notes for the audit trail
+    indicator.notes.push({
+      text: `DOCUMENT REJECTED (${doc.fileName}): ${reason.trim()}`,
+      createdBy: req.user._id,
+      createdAt: new Date(),
+    });
+
+    await indicator.save();
+
+    // Log the action
+    await logActivity({
+      user: req.user._id,
+      action: "reject_evidence_item",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "warn",
+      meta: { fileName: doc.fileName, reason }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Document rejected and user notified.",
+      indicator,
+    });
+  }
+);
+
+
+/* =====================================================
+  ADD STATUS NOTE (JUSTIFICATION)
+===================================================== */
+export const addIndicatorNote = catchAsyncErrors(
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return next(new ErrorHandler(401, "Unauthorized"));
+
+    const { id } = req.params;
+    const { text } = req.body;
+
+    if (!text || text.trim().length === 0) {
+      return next(new ErrorHandler(400, "Note text cannot be empty"));
+    }
+
+    const indicator = await Indicator.findById(id);
+    if (!indicator) return next(new ErrorHandler(404, "Indicator not found"));
+
+    // Push to the global notes array
+    indicator.notes.push({
+      text: text.trim(),
+      createdBy: req.user._id,
+      createdAt: new Date(),
+    });
+
+    // Optional: Auto-update status to 'submitted' if it was 'pending' 
+    // to let admin know there is something to read
+    if (indicator.status === STATUS.PENDING) {
+      indicator.status = STATUS.SUBMITTED;
+    }
+
+    await indicator.save();
+
+    await logActivity({
+      user: req.user._id,
+      action: "add_note",
+      entity: indicator.indicatorTitle,
+      entityId: indicator._id,
+      level: "info",
+      meta: { notePreview: text.substring(0, 30) }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Status update sent to admin",
+      note: indicator.notes[indicator.notes.length - 1],
+    });
+  }
+);

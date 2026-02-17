@@ -18,6 +18,8 @@ import {
   deleteSingleEvidence,
   updateEvidenceDescription,
   remindOverdueIndicators,
+  rejectSingleEvidence,
+  addIndicatorNote,
 } from "../controllers/indicatorController";
 import { isAuthenticated, isAuthorized } from "../middleware/auth";
 import { upload } from "../middleware/multer";
@@ -34,14 +36,14 @@ router.get(
   "/submitted",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  getSubmittedIndicators
+  getSubmittedIndicators,
 );
 
 router.get(
   "/all",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  getAllIndicators
+  getAllIndicators,
 );
 
 /* ================================================
@@ -52,7 +54,7 @@ router.post(
   "/create",
   isAuthenticated,
   isAuthorized("superadmin"),
-  createIndicator
+  createIndicator,
 );
 
 router.get("/get/:id", isAuthenticated, getIndicatorById);
@@ -61,14 +63,14 @@ router.put(
   "/update/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  updateIndicator
+  updateIndicator,
 );
 
 router.delete(
   "/delete/:id",
   isAuthenticated,
   isAuthorized("superadmin"),
-  deleteIndicator
+  deleteIndicator,
 );
 
 /* ================================================
@@ -80,15 +82,15 @@ router.post(
   "/submit/:id",
   isAuthenticated,
   upload.array("files", 100),
-  submitIndicatorEvidence
+  submitIndicatorEvidence,
 );
 
 // User Resubmission (Post-Rejection)
 router.post(
   "/resubmit/:id",
   isAuthenticated,
-  upload.array("files", 100), 
-  resubmitIndicatorEvidence
+  upload.array("files", 100),
+  resubmitIndicatorEvidence,
 );
 
 // Admin Direct Upload (Auto-approve)
@@ -97,15 +99,14 @@ router.post(
   isAuthenticated,
   isAuthorized("admin", "superadmin"),
   upload.array("files", 10),
-  adminSubmitIndicatorEvidence
+  adminSubmitIndicatorEvidence,
 );
-
 
 // Delete single evidence (User-only ownership verified in controller)
 router.delete(
   "/:id/evidence/:evidenceId",
   isAuthenticated,
-  deleteSingleEvidence
+  deleteSingleEvidence,
 );
 
 // Update evidence description
@@ -113,7 +114,7 @@ router.patch(
   "/:id/evidence/:evidenceId/description",
   isAuthenticated,
   isAuthorized("admin", "superadmin"),
-  updateEvidenceDescription
+  updateEvidenceDescription,
 );
 
 /* ================================================
@@ -124,28 +125,28 @@ router.put(
   "/approve/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  approveIndicator
+  approveIndicator,
 );
 
 router.put(
   "/reject/:id",
   isAuthenticated,
   isAuthorized("superadmin", "admin"),
-  rejectIndicator
+  rejectIndicator,
 );
 
 router.patch(
   "/:id/progress",
   isAuthenticated,
   isAuthorized("admin", "superadmin"),
-  updateIndicatorProgress
+  updateIndicatorProgress,
 );
 
 router.post(
   "/submit-score/:id",
   isAuthenticated,
   isAuthorized("admin", "superadmin"),
-  submitIndicatorScore
+  submitIndicatorScore,
 );
 
 /* ================================================
@@ -155,7 +156,7 @@ router.post(
 router.get(
   "/:id/proxy-evidence", // Changed :indicatorId to :id for consistency
   isAuthenticated,
-  proxyEvidenceStream
+  proxyEvidenceStream,
 );
 
 /**
@@ -163,10 +164,21 @@ router.get(
  * @desc    Broadcast reminder emails to all users with overdue tasks
  * @access  Private (Superadmin only)
  */
-router.post("/remind-overdue",
-  isAuthenticated, 
-  isAuthorized("superadmin"), 
-  remindOverdueIndicators
+router.post(
+  "/remind-overdue",
+  isAuthenticated,
+  isAuthorized("superadmin"),
+  remindOverdueIndicators,
 );
+
+router.patch(
+  "/:id/evidence/:evidenceId/reject",
+  isAuthenticated,
+  isAuthorized("admin", "superadmin"),
+  rejectSingleEvidence,
+);
+
+// Add this route
+router.post("/:id/notes", isAuthenticated, addIndicatorNote);
 
 export default router;
