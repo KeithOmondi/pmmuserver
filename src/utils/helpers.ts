@@ -58,7 +58,9 @@ export const buildEvidence = (
   resourceType: upload.resource_type,
   cloudinaryType: upload.type,
   format: upload.format,
-  version: upload.version,
+  // Fix: Ensure version is never undefined. 
+  // If upload.version is missing, fallback to 1 or a timestamp.
+  version: upload.version || Date.now(), 
   status: "active",
   isArchived: false,
   isResubmission: attempt > 0,

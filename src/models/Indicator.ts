@@ -117,7 +117,7 @@ const evidenceSchema = new Schema<IEvidence>(
       required: true,
     },
     format: { type: String, required: true },
-    version: { type: Number, required: true },
+    version: { type: Number, required: true, default: 1 },
     status: { type: String, enum: EVIDENCE_STATUS, default: "active" },
     isArchived: { type: Boolean, default: false },
     isResubmission: { type: Boolean, default: false },
